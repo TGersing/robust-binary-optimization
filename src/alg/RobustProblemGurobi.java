@@ -88,6 +88,7 @@ class RobustProblemGurobi extends ProblemGurobi {
 		uncertainModelVariables = new GRBVar[uncertainVariables.length];
 		for (int i = 0; i < uncertainVariables.length; i++) {
 			uncertainModelVariables[i] = uncertainVariables[i].getModelVariable();
+			uncertainVariables[i].setUncertainIndex(i);
 		}
 	}
 	

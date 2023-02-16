@@ -7,9 +7,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.TreeSet;
 
-import alg.AlgBranchAndBound.BnBStrategies.BnBIntegerOptimalityCutsStrategy;
-import alg.AlgBranchAndBound.BnBStrategies.BnBLPOptimalityCutsStrategy;
 import alg.SubproblemBoundedGurobi.BoundingSubproblemsStrategies;
+import alg.SubproblemBoundedGurobi.BoundingSubproblemsStrategies.BoundingIPOptimalityCutsStrategy;
+import alg.SubproblemBoundedGurobi.BoundingSubproblemsStrategies.BoundingLPOptimalityCutsStrategy;
 import gurobi.GRBException;
 import util.BnBNode;
 import util.CliquePartitioning;
@@ -19,7 +19,7 @@ import util.Variable;
 
 /**
  * This class implements the branch and bound algorithm as described
- * in the paper "A Branch & Bound Algorithm for Robust Binary Optimization with Budget Uncertainty".
+ * in the paper "A Branch and Bound Algorithm for Robust Binary Optimization with Budget Uncertainty".
  * 
  * @author Timo Gersing
  */
@@ -125,7 +125,7 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 		
 		//Computes a conflict graph and clique partitioning if the corresponding strategy is chosen.
 		ConflictGraph conflictGraph = null;
-		if (bnbStrategies.getCliqueStrategy() == RobustAlgorithmStrategies.CliqueStrategy.CLIQUES) {
+		if (bnbStrategies.getCliqueStrategy() == RobustAlgorithmStrategies.CliqueStrategy.CLIQUES_ENABLE) {
 			conflictGraph = new ConflictGraph(subproblemBounded.getModel(), subproblemBounded.getUncertainModelVariables(), algorithmParameters);
 			cliquePartitioning = new CliquePartitioning(subproblemBounded.getUncertainVariables(), conflictGraph, algorithmParameters);
 			subproblemBounded.setCliquePartitioning(cliquePartitioning);
@@ -225,7 +225,7 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 		subproblemBounded.setGlobalPrimalBound(primalBound);
 		
 		//Determines estimators and optimality cuts if the corresponding options are chosen.
-		if (bnbStrategies.getEstimatorStrategy() != BnBStrategies.BnBEstimatorStrategy.NO_ESTIMATORS || bnbStrategies.getIntOptimalityCutsStrategy() == BnBIntegerOptimalityCutsStrategy.CUTS) {
+		if (bnbStrategies.getEstimatorStrategy() != BnBStrategies.BnBEstimatorStrategy.ESTIMATORS_NONE || bnbStrategies.getIPOptimalityCutsStrategy() == BoundingIPOptimalityCutsStrategy.IPOPTCUTS_ENABLE) {
 			//The set of remaining values.
 			TreeSet<PossibleZ> remainingPossibleZs = new TreeSet<PossibleZ>();
 			
@@ -246,7 +246,7 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 			
 			//The bounds for the optimality-cuts are given by the smallest and largest remaining values
 			//around the chosen node such that there exists no already considered value of z in between.
-			if (bnbStrategies.getIntOptimalityCutsStrategy() == BnBIntegerOptimalityCutsStrategy.CUTS) {
+			if (bnbStrategies.getIPOptimalityCutsStrategy() == BoundingIPOptimalityCutsStrategy.IPOPTCUTS_ENABLE) {
 				//If we set optimality-cuts then we do not compute estimators for values outside of the corresponding bounds.				
 				//Removes all remaining values that are smaller than an already considered value for z that is smaller than the values in the node.
 				PossibleZ greatestSmallerConsideredZ = consideredZForRobustSubproblems.floor(chosenNode.getLowerBoundZ());
@@ -266,7 +266,7 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 			}
 			
 			//Computes estimators according to the chosen option.
-			if (bnbStrategies.getEstimatorStrategy() == BnBStrategies.BnBEstimatorStrategy.IMPROVED_ESTIMATORS) {
+			if (bnbStrategies.getEstimatorStrategy() == BnBStrategies.BnBEstimatorStrategy.ESTIMATORS_IMPROVED) {
 				//If the node consists of only one possible value for z then this value defines the estimators for all lower and higher values.
 				if (chosenNode.getLowerBoundZ() == chosenNode.getUpperBoundZ()) {
 					chosenNode.getUpperBoundZ().setImprovedEstimators(remainingPossibleZs, subproblemBounded.getGamma(), subproblemBounded.getUncertainVariables());
@@ -278,7 +278,7 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 				}
 			}
 			//If we use the estimators by Hansknecht, Stichter, Stiller then these are defined by the lowest value in the node.
-			else if (bnbStrategies.getEstimatorStrategy() == BnBStrategies.BnBEstimatorStrategy.HRS_ESTIMATORS) {
+			else if (bnbStrategies.getEstimatorStrategy() == BnBStrategies.BnBEstimatorStrategy.ESTIMATORS_HRS) {
 				chosenNode.getLowerBoundZ().setHRSEstimators(remainingPossibleZs, subproblemBounded.getGamma());
 			}
 		}
@@ -310,7 +310,7 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 		minimumDualBoundPrunedNodes = Math.min(minimumDualBoundPrunedNodes, chosenNode.getDualBound());		
 		
 		//Uses estimators to improve the individual dual bounds of other possible values for z.
-		if (bnbStrategies.getEstimatorStrategy() != BnBStrategies.BnBEstimatorStrategy.NO_ESTIMATORS) {
+		if (bnbStrategies.getEstimatorStrategy() != BnBStrategies.BnBEstimatorStrategy.ESTIMATORS_NONE) {
 			//If the node consists of only one possible value for z then this value defines the estimators for all lower and higher values.
 			if (chosenNode.getLowerBoundZ() == chosenNode.getUpperBoundZ()) {
 				chosenNode.getLowerBoundZ().estimateDualBounds(subproblemBounded.getDualBound());
@@ -364,7 +364,7 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 		subproblemBounded.updateBounds(chosenNode);
 		
 		//Adds optimality-cuts if the corresponding option is chosen.
-		if (bnbStrategies.getLpOptimalityCutsStrategy() == BnBLPOptimalityCutsStrategy.CUTS) {
+		if (bnbStrategies.getLpOptimalityCutsStrategy() == BoundingLPOptimalityCutsStrategy.LPOPTCUTS_ENABLE) {
 			subproblemBounded.addOptimalityCuts(chosenNode.getLowerBoundZ(), chosenNode.getUpperBoundZ());
 		}
 		
@@ -623,9 +623,9 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 		 * or whether we don't use estimators at all.
 		 */
 		public enum BnBEstimatorStrategy{
-			IMPROVED_ESTIMATORS,
-			HRS_ESTIMATORS,
-			NO_ESTIMATORS;
+			ESTIMATORS_IMPROVED,
+			ESTIMATORS_HRS,
+			ESTIMATORS_NONE;
 		}
 		
 		/**
@@ -636,36 +636,26 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 			BRANCHAROUND_CONVEXCOMB,
 			BRANCHAROUND_Z;
 		}
+
+		BnBEstimatorStrategy estimatorStrategy;
+		BnBBranchingStrategy branchingStrategy;
 		
 		/**
-		 * Enum type specifying whether we use optimality-cuts.
+		 * Constructor obtaining arguments which are matched to the enums defining strategies.
 		 */
-		public enum BnBLPOptimalityCutsStrategy {
-			NO_CUTS,
-			CUTS;
-		}
-		
-		/**
-		 * Enum type specifying whether we use optimality-cuts.
-		 */
-		public enum BnBIntegerOptimalityCutsStrategy {
-			NO_CUTS,
-			CUTS,
+		public BnBStrategies(List<String> argList, AlgorithmParameters algorithmParameters) throws IOException {
+			super(argList, algorithmParameters);
 		}
 
-		private BnBEstimatorStrategy estimatorStrategy;
-		private BnBBranchingStrategy branchingStrategy;
-		private BnBLPOptimalityCutsStrategy lpOptimalityCutsStrategy;
-		private BnBIntegerOptimalityCutsStrategy intOptimalityCutsStrategy;
-		
-		public BnBStrategies() {
-			super();
-			improvingZStrategy = BoundingImprovingZStrategy.IMPROVE_Z;
-			terminationStrategy = BoundingTerminationStrategy.TERMINATE;
-			estimatorStrategy = BnBEstimatorStrategy.IMPROVED_ESTIMATORS;
+		@Override
+		void setDefaultStrategies() {
+			super.setDefaultStrategies();
+			improvingZStrategy = ImprovingZStrategy.IMPROVINGZ_ENABLE;
+			terminationStrategy = BoundingTerminationStrategy.TERMINATION_ENABLE;
+			estimatorStrategy = BnBEstimatorStrategy.ESTIMATORS_IMPROVED;
 			branchingStrategy = BnBBranchingStrategy.BRANCHAROUND_CONVEXCOMB;
-			lpOptimalityCutsStrategy = BnBLPOptimalityCutsStrategy.NO_CUTS;
-			intOptimalityCutsStrategy = BnBIntegerOptimalityCutsStrategy.CUTS;
+			lpOptimalityCutsStrategy = BoundingLPOptimalityCutsStrategy.LPOPTCUTS_DISABLE;
+			ipOptimalityCutsStrategy = BoundingIPOptimalityCutsStrategy.IPOPTCUTS_ENABLE;
 		}
 		
 		public BnBEstimatorStrategy getEstimatorStrategy() {
@@ -674,18 +664,7 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 		public void setEstimatorStrategy(BnBEstimatorStrategy estimatorStrategy) {
 			this.estimatorStrategy = estimatorStrategy;
 		}
-		public BnBLPOptimalityCutsStrategy getLpOptimalityCutsStrategy() {
-			return lpOptimalityCutsStrategy;
-		}
-		public void setLpOptimalityCutsStrategy(BnBLPOptimalityCutsStrategy lpOptimalityCutsStrategy) {
-			this.lpOptimalityCutsStrategy = lpOptimalityCutsStrategy;
-		}
-		public BnBIntegerOptimalityCutsStrategy getIntOptimalityCutsStrategy() {
-			return intOptimalityCutsStrategy;
-		}
-		public void setIntOptimalityCutsStrategy(BnBIntegerOptimalityCutsStrategy intOptimalityCutsStrategy) {
-			this.intOptimalityCutsStrategy = intOptimalityCutsStrategy;
-		}
+		
 		public BnBBranchingStrategy getBranchingStrategy() {
 			return branchingStrategy;
 		}

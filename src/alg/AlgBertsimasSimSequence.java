@@ -59,7 +59,7 @@ public class AlgBertsimasSimSequence extends AbstractAlgorithm implements Robust
 		writeOutput(output);
 		//Computes a conflict graph if the corresponding strategy is chosen.
 		ConflictGraph conflictGraph = null;
-		if (bsStrategies.getCliqueStrategy() == CliqueStrategy.CLIQUES) {
+		if (bsStrategies.getCliqueStrategy() == CliqueStrategy.CLIQUES_ENABLE) {
 			conflictGraph = new ConflictGraph(subproblemNominal.getModel(), subproblemNominal.getUncertainModelVariables(), algorithmParameters);
 		}
 		//Computes a list of possible optimal choices for z respecting the chosen filtering and clique strategies.
@@ -138,24 +138,18 @@ public class AlgBertsimasSimSequence extends AbstractAlgorithm implements Robust
 	 */
 	public static class BSStrategies extends NOSStrategies{
 		
-		public BSStrategies() {
-			improvingZStrategy = NOSImprovingZStrategy.IMPROVE_Z;
-			terminationStrategy = NOSTerminationStrategy.TERMINATE_DIRECT;
+		/**
+		 * Constructor obtaining arguments which are matched to the enums defining strategies.
+		 */
+		public BSStrategies(List<String> argList, AlgorithmParameters algorithmParameters) throws IOException {
+			super(argList, algorithmParameters);
 		}
 		
-		public NOSImprovingZStrategy getImprovingZStrategy() {
-			return improvingZStrategy;
-		}
-		public void setImprovingZStrategy(NOSImprovingZStrategy improvingZStrategy) {
-			this.improvingZStrategy = improvingZStrategy;
-		}
-
-		public NOSTerminationStrategy getTerminationStrategy() {
-			return terminationStrategy;
-		}
-		public void setTerminationStrategy(NOSTerminationStrategy terminationStrategy) {
-			this.terminationStrategy = terminationStrategy;
+		@Override
+		void setDefaultStrategies() {
+			super.setDefaultStrategies();
+			improvingZStrategy = ImprovingZStrategy.IMPROVINGZ_ENABLE;
+			terminationStrategy = NOSTerminationStrategy.TERMINATION_DIRECT;
 		}
 	}
-
 }

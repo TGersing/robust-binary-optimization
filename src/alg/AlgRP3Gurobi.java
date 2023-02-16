@@ -16,6 +16,9 @@ import util.Variable;
  * @author Timo Gersing
  */
 public class AlgRP3Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
+	/**
+	 * The robust problem to be solved.
+	 */
 	private RobustProblemGurobi robustProblem;		
 
 	/**

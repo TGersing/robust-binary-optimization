@@ -6,6 +6,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import alg.AbstractAlgorithm.AlgStrategies;
 import alg.AbstractAlgorithm.AlgorithmParameters;
 import gurobi.GRBVar;
 import util.ConflictGraph;
@@ -26,8 +27,8 @@ public interface RobustAlgorithm {
 	private int computeIndexHighestPossibleZ(Variable[] uncertainVariables, double Gamma, RobustAlgorithmStrategies robustAlgorithmStrategies) {
 		int indexHighestPossibleZ = uncertainVariables.length-1;
 
-		if (robustAlgorithmStrategies.getFilterStrategy() == RobustAlgorithmStrategies.FilterStrategy.FILTERED_Z) {
-			if (robustAlgorithmStrategies.getCliqueStrategy() == RobustAlgorithmStrategies.CliqueStrategy.CLIQUES) {
+		if (robustAlgorithmStrategies.getFilterStrategy() == RobustAlgorithmStrategies.FilterStrategy.FILTERINGZ_ENABLE) {
+			if (robustAlgorithmStrategies.getCliqueStrategy() == RobustAlgorithmStrategies.CliqueStrategy.CLIQUES_ENABLE) {
 				indexHighestPossibleZ = uncertainVariables.length;
 				int numberCliques = 0;
 				Set<List<Integer>> usedCliques = new HashSet<List<Integer>>();
@@ -98,7 +99,7 @@ public interface RobustAlgorithm {
 
 		if (indexHighestPossibleZ > -1) {
 			//If we do not filter or if Gamma is not integer then we add all deviations up to the highest index once.
-			if (robustAlgorithmStrategies.getFilterStrategy() == RobustAlgorithmStrategies.FilterStrategy.UNIQUE_Z || (int)Gamma != Gamma) {
+			if (robustAlgorithmStrategies.getFilterStrategy() == RobustAlgorithmStrategies.FilterStrategy.FILTERINGZ_DISABLE || (int)Gamma != Gamma) {
 				for (int i = 0; i <= indexHighestPossibleZ; i++) {
 					if (possibleZs.get(possibleZs.size()-1).getValue() != uncertainVariables[i].getDeviation()) {
 						possibleZs.add(new PossibleZ(uncertainVariables[i].getDeviation()));
@@ -154,29 +155,37 @@ public interface RobustAlgorithm {
 	/**
 	 * Specifies clique and filtering strategies;
 	 */
-	public class RobustAlgorithmStrategies {
+	public class RobustAlgorithmStrategies extends AlgStrategies{
 		/**
 		 * Specifies whether the set of possibly optimal values for z should be filtered in advance.
 		 */
 		public enum FilterStrategy {
-			UNIQUE_Z,
-			FILTERED_Z;
+			FILTERINGZ_ENABLE,
+			FILTERINGZ_DISABLE;
 		}
 		
 		/**
 		 * Specifies whether variables should be merged into cliques of a conflict graph.
 		 */
 		public enum CliqueStrategy {
-			NO_CLIQUES,
-			CLIQUES;
+			CLIQUES_ENABLE,
+			CLIQUES_DISABLE;
 		}
 		
-		protected CliqueStrategy cliqueStrategy;
-		protected FilterStrategy filterStrategy;
+		CliqueStrategy cliqueStrategy;
+		FilterStrategy filterStrategy;
 		
-		public RobustAlgorithmStrategies() {
-			cliqueStrategy = CliqueStrategy.CLIQUES;
-			filterStrategy = FilterStrategy.FILTERED_Z;
+		/**
+		 * Constructor obtaining arguments which are matched to the enums defining strategies.
+		 */
+		public RobustAlgorithmStrategies(List<String> argList, AlgorithmParameters algorithmParameters) throws IOException {
+			super(argList, algorithmParameters);
+		}
+
+		@Override
+		void setDefaultStrategies() {
+			cliqueStrategy = CliqueStrategy.CLIQUES_ENABLE;
+			filterStrategy = FilterStrategy.FILTERINGZ_ENABLE;
 		}
 		
 		public CliqueStrategy getCliqueStrategy() {
@@ -185,12 +194,12 @@ public interface RobustAlgorithm {
 		public void setCliqueStrategy(CliqueStrategy cliqueStrategy) {
 			this.cliqueStrategy = cliqueStrategy;
 		}
+		
 		public FilterStrategy getFilterStrategy() {
 			return filterStrategy;
 		}
 		public void setFilterStrategy(FilterStrategy filterStrategy) {
 			this.filterStrategy = filterStrategy;
 		}
-
 	}
 }

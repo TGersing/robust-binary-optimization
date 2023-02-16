@@ -2,11 +2,11 @@ package alg;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 import alg.AbstractAlgorithm.AlgorithmParameters;
-import alg.RobustAlgorithm.RobustAlgorithmStrategies;
-import alg.SubproblemNominalGurobi.NOSStrategies.NOSImprovingZStrategy;
+import alg.SubproblemGurobi.SubproblemsStrategies.ImprovingZStrategy;
 import alg.SubproblemNominalGurobi.NOSStrategies.NOSTerminationStrategy;
 import gurobi.GRB;
 import gurobi.GRBCallback;
@@ -146,7 +146,7 @@ class SubproblemNominalGurobi extends SubproblemGurobi {
 		protected void callback() {
 			try {
 				//Tries to terminate the subproblem respecting estimators if the option is chosen.
-				if (nosStrategies.getTerminationStrategy() == NOSTerminationStrategy.TERMINATE_ESTIMATORS && where == GRB.CB_MIP) {
+				if (nosStrategies.getTerminationStrategy() == NOSTerminationStrategy.TERMINATION_ESTIMATORS && where == GRB.CB_MIP) {
 					//Queries the current primal and dual bound from the subproblem.
 					primalBound = getDoubleInfo(GRB.CB_MIP_OBJBST);
 					dualBound = getDoubleInfo(GRB.CB_MIP_OBJBND);
@@ -191,7 +191,7 @@ class SubproblemNominalGurobi extends SubproblemGurobi {
 				}
 
 				//Tries to terminate the subproblem directly using the global primal bound if the option is chosen.
-				if (nosStrategies.getTerminationStrategy() == NOSTerminationStrategy.TERMINATE_DIRECT && where == GRB.CB_MIP) {
+				if (nosStrategies.getTerminationStrategy() == NOSTerminationStrategy.TERMINATION_DIRECT && where == GRB.CB_MIP) {
 					dualBound = getDoubleInfo(GRB.CB_MIP_OBJBND);
 					if (AbstractAlgorithm.isOptimal(globalPrimalBound, dualBound, algorithmParameters)) {
 						String output = "###Terminated due to global primal bound";
@@ -207,7 +207,7 @@ class SubproblemNominalGurobi extends SubproblemGurobi {
 
 
 			try {
-				if (nosStrategies.getImprovingZStrategy() == NOSImprovingZStrategy.IMPROVE_Z && where == GRB.CB_MIPSOL) {
+				if (nosStrategies.getImprovingZStrategy() == ImprovingZStrategy.IMPROVINGZ_ENABLE && where == GRB.CB_MIPSOL) {
 					double[] incumbentNominalVariablesValues = getSolution(nominalModelVariables);
 					double[] incumbentUncertainVariablesValues = getSolution(uncertainModelVariables);
 					improveZ(getDoubleInfo(GRB.CB_MIPSOL_OBJ), incumbentNominalVariablesValues, incumbentUncertainVariablesValues);
@@ -272,41 +272,25 @@ class SubproblemNominalGurobi extends SubproblemGurobi {
 	/**
 	 * Specifies strategies for algorithms solving nominal subproblems;
 	 */
-	abstract static class NOSStrategies extends RobustAlgorithmStrategies{
+	abstract static class NOSStrategies extends SubproblemsStrategies{
 		/**
 		 * Enum type specifying whether we terminate nominal subproblems prematurely.
 		 * We can either terminate the problem respecting estimators or directly once the
 		 * dual bound is strong enough compared to the global primal bound.
 		 */
 		public enum NOSTerminationStrategy {
-			DONT_TERMINATE,
-	 		TERMINATE_ESTIMATORS,
-	 		TERMINATE_DIRECT;
+	 		TERMINATION_ESTIMATORS,
+	 		TERMINATION_DIRECT,
+			TERMINATION_DISABLE;
 		}
+		
+		NOSTerminationStrategy terminationStrategy;
 		
 		/**
-		 * Enum type specifying whether we improve incumbent solutions by computing an optimal choice for z.
+		 * Constructor obtaining arguments which are matched to the enums defining strategies.
 		 */
-		public enum NOSImprovingZStrategy {
-			DONT_IMPROVE_Z,
-			IMPROVE_Z;
-		}
-
-		protected NOSImprovingZStrategy improvingZStrategy;
-		protected NOSTerminationStrategy terminationStrategy;
-		
-		public NOSStrategies() {
-			super();
-			improvingZStrategy = NOSImprovingZStrategy.IMPROVE_Z;
-			terminationStrategy = NOSTerminationStrategy.TERMINATE_DIRECT;
-		}
-
-		
-		public NOSImprovingZStrategy getImprovingZStrategy() {
-			return improvingZStrategy;
-		}
-		public void setImprovingZStrategy(NOSImprovingZStrategy improvingZStrategy) {
-			this.improvingZStrategy = improvingZStrategy;
+		public NOSStrategies(List<String> argList, AlgorithmParameters algorithmParameters) throws IOException {
+			super(argList, algorithmParameters);
 		}
 
 		public NOSTerminationStrategy getTerminationStrategy() {

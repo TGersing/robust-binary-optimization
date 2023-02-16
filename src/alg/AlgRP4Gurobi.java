@@ -87,14 +87,14 @@ public class AlgRP4Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 	 */
 	private void reformulateModel() throws GRBException, IOException {
 		//Computes a conflict graph if the corresponding strategy is chosen
-		if (robustAlgorithmStrategies.getCliqueStrategy() == CliqueStrategy.CLIQUES || robustAlgorithmStrategies.getFilterStrategy() == FilterStrategy.FILTERED_Z) {
+		if (robustAlgorithmStrategies.getCliqueStrategy() == CliqueStrategy.CLIQUES_ENABLE || robustAlgorithmStrategies.getFilterStrategy() == FilterStrategy.FILTERINGZ_ENABLE) {
 			String output = "\n###########################\n"
 					+ "##### Start Preprocessing"
 					+ "\n###########################";
 			writeOutput(output);
 		}
 		ConflictGraph conflictGraph = null;
-		if (robustAlgorithmStrategies.getCliqueStrategy() == CliqueStrategy.CLIQUES) {
+		if (robustAlgorithmStrategies.getCliqueStrategy() == CliqueStrategy.CLIQUES_ENABLE) {
 			conflictGraph = new ConflictGraph(robustProblem.getModel(), robustProblem.getUncertainModelVariables(), algorithmParameters);
 		}
 		//Computes a list of possible optimal choices for z respecting the chosen filtering and clique strategies.

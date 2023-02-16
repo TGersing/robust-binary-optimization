@@ -26,6 +26,16 @@ public class Variable implements Comparable<Variable>{
 	}
 
 	/**
+	 * Index in the list of nominal variables.
+	 */
+	private int nominalIndex;
+
+	/**
+	 * Index in the list of uncertain variables.
+	 */
+	private Integer uncertainIndex;
+
+	/**
 	 * Variable in the solver's instance.
 	 */
 	private GRBVar modelVariable;
@@ -56,10 +66,32 @@ public class Variable implements Comparable<Variable>{
 	 * Constructor obtaining a variable of the solver's instance and an objective coefficient.
 	 * Also sets the variable's type (BINARY, INTEGER, CONTINUOUS). 
 	 */
-	public Variable(GRBVar modelVariable, double objectiveCoefficient) throws GRBException {
+	public Variable(int index, GRBVar modelVariable, double objectiveCoefficient) throws GRBException {
+		this.nominalIndex = index;
 		this.modelVariable = modelVariable;
 		this.objectiveCoefficient = objectiveCoefficient;
 		setType();
+	}
+
+	/**
+	 * Returns the index of the variable in the list of nominal variables.
+	 */
+	public int getNominalIndex() {
+		return nominalIndex;
+	}
+	
+	/**
+	 * Returns the index of the variable in the list of uncertain variables.
+	 */
+	public Integer getUncertainIndex() {
+		return uncertainIndex;
+	}
+
+	/**
+	 * Sets the index of the variable in the list of uncertain variables.
+	 */
+	public void setUncertainIndex(Integer uncertainIndex) {
+		this.uncertainIndex = uncertainIndex;
 	}
 	
 	/**
@@ -127,7 +159,7 @@ public class Variable implements Comparable<Variable>{
 	public void setClique(List<Integer> clique) {
 		this.clique = clique;
 	}
-	
+
 	/**
 	 * A variable is smaller than another variable if its deviation is smaller.
 	 */

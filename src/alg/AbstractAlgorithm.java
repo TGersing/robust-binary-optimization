@@ -1,8 +1,15 @@
 package alg;
 
+import java.io.BufferedReader;
 import java.io.FileWriter;
 import java.io.IOException;
+import java.io.InputStreamReader;
+import java.lang.reflect.Field;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.EnumSet;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -343,5 +350,89 @@ public abstract class AbstractAlgorithm {
 			model.set(GRB.DoubleParam.MIPGap, relativeGapTolerance);
 			model.set(GRB.DoubleParam.MIPGapAbs, absoluteGapTolerance);
 		}
+	}
+	
+	static abstract class AlgStrategies {
+		/**
+		 * Constructor obtaining arguments which are matched to the enums defining strategies.
+		 */
+		public AlgStrategies(List<String> argList, AlgorithmParameters algorithmParameters) throws IOException {
+			setDefaultStrategies();
+			
+			List<Field> fields = new ArrayList<Field>();
+			Class<?> superClass = this.getClass();
+			while (superClass != null) {
+				fields.addAll(Arrays.asList(superClass.getDeclaredFields()));
+				superClass = superClass.getSuperclass();
+			}
+			
+			if (argList != null) {
+				//Obtains optional arguments.
+				for (String arg : argList) {
+					boolean successful = false;
+					for (Field field : fields) {
+						try {
+							field.set(this, Enum.valueOf(((Enum<?>) field.get(this)).getDeclaringClass(), arg.toUpperCase()));
+							successful = true;
+						} catch (ClassCastException | IllegalArgumentException | IllegalAccessException e) {}
+					}
+					if (!successful) {
+						writeOutput("Argument "+arg+" could not be matched to an enum of "+this.getClass().getName()+" and will thus be ignored.", algorithmParameters);
+					}
+				}
+				writeOutput("", algorithmParameters);
+			}
+			else {
+				int counter = 0;
+				while (true) {
+					BufferedReader consoleReader = new BufferedReader(new InputStreamReader(System.in));
+					String request = "\nDo you want to specify ";
+					if (counter > 0) {
+						request += "further ";
+					}
+					request += "strategies for the algorithm?\n"
+							+ "Type in one of the following strategies to be defined (leave blank to not change strategies):\n";
+					for (Field field : fields) {
+						try {
+							request += field.get(this).getClass().getSimpleName()+" ";
+						} catch (IllegalArgumentException | IllegalAccessException e) {	}
+					}
+					System.out.println(request);
+					String fieldClassName = consoleReader.readLine();
+					if (fieldClassName.isEmpty()) {
+						break;
+					}
+					Field chosenField = null;
+					for (Field field : fields) {
+						try {
+							if (field.get(this).getClass().getSimpleName().toLowerCase().equals(fieldClassName.toLowerCase())) {
+								chosenField = field;
+								fieldClassName = field.get(this).getClass().getSimpleName();
+							}
+						} catch (IllegalArgumentException | IllegalAccessException e) {	}
+					}
+					if (chosenField != null) {
+						try {
+							request = "Type in one of the following options:\n";
+							for (Enum<?> strategy : EnumSet.allOf(((Enum<?>) chosenField.get(this)).getDeclaringClass())) {
+								request += strategy.name()+" ";
+							}
+							System.out.println(request);
+							String input = consoleReader.readLine().toUpperCase();
+							chosenField.set(this, Enum.valueOf(((Enum<?>) chosenField.get(this)).getDeclaringClass(), input));
+							System.out.println("Set "+fieldClassName+" to "+input);
+							counter++;
+						} catch (IllegalArgumentException | IllegalAccessException e) {
+							System.out.println("The input could not be matched to a strategy.");
+						}
+					}
+					else {
+						System.out.println("The input could not be matched to a strategy.");
+					}
+				}
+			}
+		}
+
+		abstract void setDefaultStrategies();
 	}
 }

@@ -17,7 +17,7 @@ import util.Variable;
 
 /**
  * This class implements the standard reformulation by Bertsimas and Sim. The formulation is improved
- * as described in "A Branch & Bound Algorithm for Robust Binary Optimization with Budget Uncertainty".
+ * as described in "A Branch and Bound Algorithm for Robust Binary Optimization with Budget Uncertainty".
  * 
  * @author Timo Gersing
  */
@@ -70,7 +70,7 @@ public class AlgReformulationGurobi extends AbstractAlgorithm implements RobustA
 	 */
 	private void reformulateModel() throws GRBException, IOException {
 		//Computes a conflict graph and clique partitioning if the corresponding strategy is chosen
-		if (robustAlgorithmStrategies.getCliqueStrategy() == CliqueStrategy.CLIQUES || robustAlgorithmStrategies.getFilterStrategy() == FilterStrategy.FILTERED_Z) {
+		if (robustAlgorithmStrategies.getCliqueStrategy() == CliqueStrategy.CLIQUES_ENABLE || robustAlgorithmStrategies.getFilterStrategy() == FilterStrategy.FILTERINGZ_ENABLE) {
 			String output = "\n###########################\n"
 					+ "##### Start Preprocessing"
 					+ "\n###########################";
@@ -78,7 +78,7 @@ public class AlgReformulationGurobi extends AbstractAlgorithm implements RobustA
 		}
 		ConflictGraph conflictGraph = null;
 		CliquePartitioning cliquePartitioning = null;
-		if (robustAlgorithmStrategies.getCliqueStrategy() == RobustAlgorithmStrategies.CliqueStrategy.CLIQUES) {
+		if (robustAlgorithmStrategies.getCliqueStrategy() == RobustAlgorithmStrategies.CliqueStrategy.CLIQUES_ENABLE) {
 			conflictGraph = new ConflictGraph(robustProblem.getModel(), robustProblem.getUncertainModelVariables(), algorithmParameters);
 			cliquePartitioning = new CliquePartitioning(robustProblem.getUncertainVariables(), conflictGraph, algorithmParameters);
 		}

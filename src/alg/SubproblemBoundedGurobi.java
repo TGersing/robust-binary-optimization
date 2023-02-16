@@ -2,13 +2,13 @@ package alg;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 import alg.AbstractAlgorithm.AlgorithmParameters;
-import alg.AlgBranchAndBound.BnBStrategies.BnBLPOptimalityCutsStrategy;
-import alg.RobustAlgorithm.RobustAlgorithmStrategies;
-import alg.SubproblemBoundedGurobi.BoundingSubproblemsStrategies.BoundingImprovingZStrategy;
 import alg.SubproblemBoundedGurobi.BoundingSubproblemsStrategies.BoundingTerminationStrategy;
+import alg.SubproblemBoundedGurobi.BoundingSubproblemsStrategies.BoundingLPOptimalityCutsStrategy;
+import alg.SubproblemGurobi.SubproblemsStrategies.ImprovingZStrategy;
 import gurobi.GRB;
 import gurobi.GRBCallback;
 import gurobi.GRBConstr;
@@ -288,7 +288,7 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 		protected void callback() {
 			try {
 				//Tries to terminate the subproblem if the option is chosen.
-				if (boundingStrategies.getTerminationStrategy() == BoundingTerminationStrategy.TERMINATE && where == GRB.CB_MIP) {
+				if (boundingStrategies.getTerminationStrategy() == BoundingTerminationStrategy.TERMINATION_ENABLE && where == GRB.CB_MIP) {
 					//Queries the current primal and dual bound from the subproblem.
 					primalBound = getDoubleInfo(GRB.CB_MIP_OBJBST);
 					dualBound = getDoubleInfo(GRB.CB_MIP_OBJBND);
@@ -353,7 +353,7 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 
 			//Tries to improve an incumbent solution computing an optimal value for z.
 			try {
-				if (boundingStrategies.getImprovingZStrategy() == BoundingImprovingZStrategy.IMPROVE_Z && where == GRB.CB_MIPSOL) {
+				if (boundingStrategies.getImprovingZStrategy() == ImprovingZStrategy.IMPROVINGZ_ENABLE && where == GRB.CB_MIPSOL) {
 						double[] incumbentNominalVariablesValues = getSolution(nominalModelVariables);
 						double[] incumbentUncertainVariablesValues = getSolution(uncertainModelVariables);
 						improveZ(getDoubleInfo(GRB.CB_MIPSOL_OBJ), incumbentNominalVariablesValues, incumbentUncertainVariablesValues);
@@ -382,13 +382,13 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	 * in the child nodes defined by the new lower bound and the new upper bound.
 	 * Takes optimality-cuts into consideration if the option is chosen.
 	 */
-	boolean isBranchingEffective(double Gamma, double newUpperBound, double newLowerBound, BnBLPOptimalityCutsStrategy optimalityCutsStrategy) {
+	boolean isBranchingEffective(double Gamma, double newUpperBound, double newLowerBound, BoundingLPOptimalityCutsStrategy optimalityCutsStrategy) {
 		//If z obeys the new upper bound then we have to check whether the new optimality-cuts
 		//or the stronger formulation cut-off the current solution.
 		//If this is the case then the branching is effective, as z does not obey the new lower bound.
 		if (zSolutionValue <= newUpperBound) {
 			boolean isEffective = false;
-			if (optimalityCutsStrategy == BnBLPOptimalityCutsStrategy.CUTS) {
+			if (optimalityCutsStrategy == BoundingLPOptimalityCutsStrategy.LPOPTCUTS_ENABLE) {
 				double lhs = 0;
 				for (int i = 0; i < uncertainVariables.length; i++) {
 					Variable var = uncertainVariables[i];
@@ -410,7 +410,7 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 		//If this is the case then the branching is effective, as z does not obey the new upper bound.
 		if (zSolutionValue >= newLowerBound) {
 			boolean isEffective = false;
-			if (optimalityCutsStrategy == BnBLPOptimalityCutsStrategy.CUTS) {
+			if (optimalityCutsStrategy == BoundingSubproblemsStrategies.BoundingLPOptimalityCutsStrategy.LPOPTCUTS_ENABLE) {
 				double lhs = 0;
 				for (int i = 0; i < uncertainVariables.length; i++) {
 					Variable var = uncertainVariables[i];
@@ -612,45 +612,62 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	/**
 	 * Specifies strategies for algorithms solving bounded subproblems.
 	 */
-	abstract static class BoundingSubproblemsStrategies extends RobustAlgorithmStrategies{
+	abstract static class BoundingSubproblemsStrategies extends SubproblemsStrategies{
 		/**
 		 * Enum type specifying whether we terminate robust subproblems prematurely.
 		 */
 		public enum BoundingTerminationStrategy {
-			DONT_TERMINATE,
-	 		TERMINATE;
+	 		TERMINATION_ENABLE,
+			TERMINATION_DISABLE;
 		}
 		
 		/**
-		 * Enum type specifying whether we improve incumbent solutions by computing an optimal choice for z.
+		 * Enum type specifying whether we use optimality-cuts.
 		 */
-		public enum BoundingImprovingZStrategy {
-			DONT_IMPROVE_Z,
-			IMPROVE_Z;
+		public enum BoundingLPOptimalityCutsStrategy {
+			LPOPTCUTS_ENABLE,
+			LPOPTCUTS_DISABLE;
 		}
 		
-		public BoundingSubproblemsStrategies() {
-			super();
-			improvingZStrategy = BoundingImprovingZStrategy.IMPROVE_Z;
-			terminationStrategy = BoundingTerminationStrategy.TERMINATE;
+		/**
+		 * Enum type specifying whether we use optimality-cuts.
+		 */
+		public enum BoundingIPOptimalityCutsStrategy {
+			IPOPTCUTS_ENABLE,
+			IPOPTCUTS_DISABLE;
 		}
 
-
-		protected BoundingImprovingZStrategy improvingZStrategy;
-		protected BoundingTerminationStrategy terminationStrategy;
+		BoundingTerminationStrategy terminationStrategy;
+		BoundingLPOptimalityCutsStrategy lpOptimalityCutsStrategy;
+		BoundingIPOptimalityCutsStrategy ipOptimalityCutsStrategy;
 		
-		public BoundingImprovingZStrategy getImprovingZStrategy() {
-			return improvingZStrategy;
+		
+		/**
+		 * Constructor obtaining arguments which are matched to the enums defining strategies.
+		 */
+		public BoundingSubproblemsStrategies(List<String> argList, AlgorithmParameters algorithmParameters) throws IOException {
+			super(argList, algorithmParameters);
 		}
-		public void setImprovingZStrategy(BoundingImprovingZStrategy improvingZStrategy) {
-			this.improvingZStrategy = improvingZStrategy;
-		}
+
 		public BoundingTerminationStrategy getTerminationStrategy() {
 			return terminationStrategy;
 		}
 		public void setTerminationStrategy(BoundingTerminationStrategy terminationStrategy) {
 			this.terminationStrategy = terminationStrategy;
 		}
+		
+		public BoundingLPOptimalityCutsStrategy getLpOptimalityCutsStrategy() {
+			return lpOptimalityCutsStrategy;
+		}
+		public void setLpOptimalityCutsStrategy(BoundingLPOptimalityCutsStrategy lpOptimalityCutsStrategy) {
+			this.lpOptimalityCutsStrategy = lpOptimalityCutsStrategy;
+		}
+		
+		public BoundingIPOptimalityCutsStrategy getIPOptimalityCutsStrategy() {
+			return ipOptimalityCutsStrategy;
+		}
+		public void setIPOptimalityCutsStrategy(BoundingIPOptimalityCutsStrategy ipOptimalityCutsStrategy) {
+			this.ipOptimalityCutsStrategy = ipOptimalityCutsStrategy;
+		}
 	}
-
 }

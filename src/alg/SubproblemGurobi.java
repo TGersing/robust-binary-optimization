@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import alg.AbstractAlgorithm.AlgorithmParameters;
+import alg.RobustAlgorithm.RobustAlgorithmStrategies;
 import gurobi.GRB;
 import gurobi.GRBConstr;
 import gurobi.GRBException;
@@ -119,5 +120,34 @@ abstract class SubproblemGurobi extends RobustProblemGurobi{
 		model.update();
 		String output = "Use Optimality Cuts ["+lowerBoundZ+","+upperBoundZ+"]";
 		AbstractAlgorithm.writeOutput(output, algorithmParameters);
+	}
+	
+	/**
+	 * Specifies strategies for algorithms solving subproblems.
+	 */
+	abstract static class SubproblemsStrategies extends RobustAlgorithmStrategies{
+		/**
+		 * Enum type specifying whether we improve incumbent solutions by computing an optimal choice for z.
+		 */
+		public enum ImprovingZStrategy {
+			IMPROVINGZ_ENABLE,
+			IMPROVINGZ_DISABLE;
+		}
+		
+		ImprovingZStrategy improvingZStrategy;
+		
+		/**
+		 * Constructor obtaining arguments which are matched to the enums defining strategies.
+		 */
+		public SubproblemsStrategies(List<String> argList, AlgorithmParameters algorithmParameters) throws IOException {
+			super(argList, algorithmParameters);
+		}
+
+		public ImprovingZStrategy getImprovingZStrategy() {
+			return improvingZStrategy;
+		}
+		public void setImprovingZStrategy(ImprovingZStrategy improvingZStrategy) {
+			this.improvingZStrategy = improvingZStrategy;
+		}
 	}
 }

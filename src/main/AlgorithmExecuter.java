@@ -4,6 +4,10 @@ import java.io.BufferedReader;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.io.InputStreamReader;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Iterator;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -20,6 +24,8 @@ import alg.AlgRP1Gurobi;
 import alg.AlgRP2Gurobi;
 import alg.AlgRP3Gurobi;
 import alg.AlgRP4Gurobi;
+import alg.AlgRecycleInequalitiesGurobi;
+import alg.AlgRecycleInequalitiesGurobi.RecyclingStrategies;
 import alg.AlgReformulationGurobi;
 import alg.RobustAlgorithm.RobustAlgorithmStrategies;
 import gurobi.GRB;
@@ -39,7 +45,7 @@ public class AlgorithmExecuter {
 		String problemPath;
 		String robustPath;
 		//Algorithm to be used. Can be one of the following:
-		//bnb, dnc, ref, cut, bss, rp1, rp2, rp3, rp4
+		//bnb, dnc, rec, ref, cut, bss, rp1, rp2, rp3, rp4
 		String algorithmName;
 		
 		//Optionally also receives "timelimit=*", "logpath=*.txt", "solutionpath=*.txt"
@@ -47,27 +53,33 @@ public class AlgorithmExecuter {
 		AlgorithmParameters algorithmParameters = new AlgorithmParameters();
 		Optional<String> solutionPath = Optional.empty();
 		
+		List<String> argList = new ArrayList<String>(Arrays.asList(args));
 		//If arguments are given
 		if (args.length > 0) {
 			//Obtains the path to the problem and the robustness components.
-			problemPath = args[0];
-			robustPath = args[1];
+			problemPath = argList.get(0);
+			argList.remove(0);
+			robustPath = argList.get(0);
+			argList.remove(0);
 			//Obtains the algorithm to be used.
-			algorithmName = args[2];
+			algorithmName = argList.get(0);
+			argList.remove(0);
 			
 			//Obtains optional arguments.
-			if (args.length > 3) {
-				for (int i = 3; i < args.length; i++) {
-					String[] splitargs = args[i].split("=");
-					if (splitargs[0].toLowerCase().equals("timelimit")) {
-						timeLimit = Optional.of(Integer.parseInt(splitargs[1]));
-					}
-					else if (splitargs[0].toLowerCase().equals("logpath")) {
-						algorithmParameters.setLogPath(Optional.of(splitargs[1]));
-					}
-					else if (splitargs[0].toLowerCase().equals("solutionpath")) {
-						solutionPath = Optional.of(splitargs[1]);
-					}
+			Iterator<String> argIterator = argList.iterator();
+			while (argIterator.hasNext()) {
+				String[] splitargs = argIterator.next().split("=");
+				if (splitargs[0].toLowerCase().equals("timelimit")) {
+					timeLimit = Optional.of(Integer.parseInt(splitargs[1]));
+					argIterator.remove();
+				}
+				else if (splitargs[0].toLowerCase().equals("logpath")) {
+					algorithmParameters.setLogPath(Optional.of(splitargs[1]));
+					argIterator.remove();
+				}
+				else if (splitargs[0].toLowerCase().equals("solutionpath")) {
+					solutionPath = Optional.of(splitargs[1]);
+					argIterator.remove();
 				}
 			}
 		}
@@ -78,7 +90,7 @@ public class AlgorithmExecuter {
 			problemPath = consoleReader.readLine();
 			System.out.println("State the path to the robustness components:");
 			robustPath = consoleReader.readLine();
-			System.out.println("State the algorithm to be used (bnb, dnc, ref, cut, bss, rp1, rp2, rp3, rp4):");
+			System.out.println("State the algorithm to be used (bnb, dnc, rec, ref, cut, bss, rp1, rp2, rp3, rp4):");
 			algorithmName = consoleReader.readLine();
 			
 			System.out.println("State the time limit (leave blank for no time limit):");
@@ -102,24 +114,30 @@ public class AlgorithmExecuter {
 		
 		//Initializes the chosen algorithm
 		AbstractAlgorithm algo = null;
+		if (args.length == 0) {
+			argList = null;
+		}
 		switch (algorithmName.toLowerCase()) {
 			case "bnb":
-				algo = new AlgBranchAndBound(problemPath, robustPath, algorithmParameters, new BnBStrategies());
+				algo = new AlgBranchAndBound(problemPath, robustPath, algorithmParameters, new BnBStrategies(argList, algorithmParameters));
 				break;
 			case "dnc":
-				algo = new AlgDivideAndConquer(problemPath, robustPath, algorithmParameters, new DnCStrategies());
+				algo = new AlgDivideAndConquer(problemPath, robustPath, algorithmParameters, new DnCStrategies(argList, algorithmParameters));
+				break;
+			case "rec":
+				algo = new AlgRecycleInequalitiesGurobi(problemPath, robustPath, algorithmParameters, new RecyclingStrategies(argList, algorithmParameters));
 				break;
 			case "ref":
-				algo = new AlgReformulationGurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies());
+				algo = new AlgReformulationGurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies(argList, algorithmParameters));
 				break;
 			case "cut":
 				algo = new AlgCuttingPlanesGurobi(problemPath, robustPath, algorithmParameters);
 				break;
 			case "bss":
-				algo = new AlgBertsimasSimSequence(problemPath, robustPath, algorithmParameters, new BSStrategies());
+				algo = new AlgBertsimasSimSequence(problemPath, robustPath, algorithmParameters, new BSStrategies(argList, algorithmParameters));
 				break;
 			case "rp1":
-				algo = new AlgRP1Gurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies());
+				algo = new AlgRP1Gurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies(argList, algorithmParameters));
 				break;
 			case "rp2":
 				algo = new AlgRP2Gurobi(problemPath, robustPath, algorithmParameters);
@@ -128,7 +146,7 @@ public class AlgorithmExecuter {
 				algo = new AlgRP3Gurobi(problemPath, robustPath, algorithmParameters);
 				break;
 			case "rp4":
-				algo = new AlgRP4Gurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies());
+				algo = new AlgRP4Gurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies(argList, algorithmParameters));
 				break;
 			default:
 				throw new IllegalArgumentException("Unexpected value: " + algorithmName.toLowerCase());

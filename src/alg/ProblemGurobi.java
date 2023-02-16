@@ -103,7 +103,7 @@ public class ProblemGurobi{
 		for (int i = 0; i < nominalModelVariables.length; i++) {
 			GRBVar grbVar = nominalModelVariables[i];
 			double objCoeff = grbVar.get(DoubleAttr.Obj);
-			nominalVariables[i] = new Variable(grbVar, objCoeff);
+			nominalVariables[i] = new Variable(i, grbVar, objCoeff);
 		}
 		
 		algorithmParameters.applyParameters(this);

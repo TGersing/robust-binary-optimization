@@ -20,7 +20,7 @@ import util.Variable;
 /**
  * This class implements an enhanced version of the Divide and Conquer of Hansknecht, Richter, Stiller 
  * from "Fast robust shortest path computations".  The enhancements are as described
- * in "A Branch & Bound Algorithm for Robust Binary Optimization with Budget Uncertainty".
+ * in "A Branch and Bound Algorithm for Robust Binary Optimization with Budget Uncertainty".
  * 
  * @author Timo Gersing
  */
@@ -84,7 +84,7 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 
 		//Computes a conflict graph if the corresponding strategy is chosen.
 		ConflictGraph conflictGraph = null;
-		if (dncStrategies.getCliqueStrategy() == RobustAlgorithmStrategies.CliqueStrategy.CLIQUES) {
+		if (dncStrategies.getCliqueStrategy() == RobustAlgorithmStrategies.CliqueStrategy.CLIQUES_ENABLE) {
 			conflictGraph = new ConflictGraph(subproblemNominal.getModel(), subproblemNominal.getUncertainModelVariables(), algorithmParameters);
 			subproblemNominal.setCliquePartitioning(new CliquePartitioning(subproblemNominal.getUncertainVariables(), conflictGraph, algorithmParameters));
 		}
@@ -248,7 +248,7 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 		//Then we only compute estimators for the values of z in the node.
 		//If we do not use optimality cuts then we compute estimators for all remaining values for z.
 		TreeSet<PossibleZ> restrictedRemainingPossibleZs = new TreeSet<PossibleZ>();
-		if (dncStrategies.getOptimalityCutsStrategy() == DnCOptimalityCutsStrategy.CUTS) {
+		if (dncStrategies.getOptimalityCutsStrategy() == DnCOptimalityCutsStrategy.OPTCUTS_ENABLE) {
 			restrictedRemainingPossibleZs.addAll(chosenNode.getPossibleZs());
 			PossibleZ lowerBoundOptCut = restrictedRemainingPossibleZs.first();
 			PossibleZ upperBoundOptCut = restrictedRemainingPossibleZs.last();
@@ -261,10 +261,10 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 		}
 		
 		//Computes estimators for obtaining dual bounds on other nominal subproblems.
-		if (dncStrategies.getEstimatorStrategy() == DnCStrategies.DnCEstimatorStrategy.IMPROVED_ESTIMATORS) {
+		if (dncStrategies.getEstimatorStrategy() == DnCStrategies.DnCEstimatorStrategy.ESTIMATORS_IMPROVED) {
 			chosenPossibleZ.setImprovedEstimators(restrictedRemainingPossibleZs, subproblemNominal.getGamma(), subproblemNominal.getUncertainVariables());
 		}
-		else if (dncStrategies.getEstimatorStrategy() == DnCStrategies.DnCEstimatorStrategy.HRS_ESTIMATORS) {
+		else if (dncStrategies.getEstimatorStrategy() == DnCStrategies.DnCEstimatorStrategy.ESTIMATORS_HRS) {
 			chosenPossibleZ.setHRSEstimators(restrictedRemainingPossibleZs, subproblemNominal.getGamma());
 		}
 		
@@ -319,27 +319,35 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 		 * dual bounds from one nominal subproblem to another or whether we use the improved estimators.
 		 */
 		public enum DnCEstimatorStrategy{
-			HRS_ESTIMATORS,
-			IMPROVED_ESTIMATORS; 
+			ESTIMATORS_IMPROVED,
+			ESTIMATORS_HRS;
 		}
 		
 		/**
 		 * Enum type specifying whether we use optimality-cuts.
 		 */
 		public enum DnCOptimalityCutsStrategy {
-			NO_CUTS,
-			CUTS;
+			OPTCUTS_ENABLE,
+			OPTCUTS_DISABLE;
 		}
 		
-		private DnCEstimatorStrategy estimatorStrategy;
-		private DnCOptimalityCutsStrategy optimalityCutsStrategy;
+		DnCEstimatorStrategy estimatorStrategy;
+		DnCOptimalityCutsStrategy optimalityCutsStrategy;
 		
-		public DnCStrategies() {
-			super();
-			improvingZStrategy = NOSImprovingZStrategy.IMPROVE_Z;
-			terminationStrategy = NOSTerminationStrategy.TERMINATE_ESTIMATORS;
-			estimatorStrategy = DnCEstimatorStrategy.IMPROVED_ESTIMATORS;
-			optimalityCutsStrategy = DnCOptimalityCutsStrategy.CUTS;
+		/**
+		 * Constructor obtaining arguments which are matched to the enums defining strategies.
+		 */
+		public DnCStrategies(List<String> argList, AlgorithmParameters algorithmParameters) throws IOException {
+			super(argList, algorithmParameters);
+		}
+
+		@Override
+		void setDefaultStrategies() {
+			super.setDefaultStrategies();
+			improvingZStrategy = ImprovingZStrategy.IMPROVINGZ_ENABLE;
+			terminationStrategy = NOSTerminationStrategy.TERMINATION_ESTIMATORS;
+			estimatorStrategy = DnCEstimatorStrategy.ESTIMATORS_IMPROVED;
+			optimalityCutsStrategy = DnCOptimalityCutsStrategy.OPTCUTS_ENABLE;
 		}
 
 		public DnCEstimatorStrategy getEstimatorStrategy() {
@@ -354,6 +362,6 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 		}
 		public void setOptimalityCutsStrategy(DnCOptimalityCutsStrategy optimalityCutsStrategy) {
 			this.optimalityCutsStrategy = optimalityCutsStrategy;
-		}		
+		}
 	}
 }
