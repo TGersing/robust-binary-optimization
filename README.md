@@ -1,5 +1,7 @@
 # Robust Binary Optimization
-Released: December 20, 2023
+Released: December 20, 2022
+
+Last Updated: May 16, 2023
 
 Written by Timo Gersing
 
@@ -22,7 +24,7 @@ To solve a problem, run the `AlgorithmExecuter` class. You can specify the probl
 
 In the latter case, the first argument is the path to the nominal problem file. The second argument is the path to the robustness components. The third argument is the algorithm to use. Here you can choose from `bnb`, `rec`, `dnc`, `ref`, `cut`, `bss`, `rp1`, `rp2`, `rp3`, `rp4`, where bnb is the branch and bound algorithm from "A Branch and Bound Algorithm for Robust Binary Optimization with Budget Uncertainty" and rec uses recycled inequalities from "Recycling Inequalities for Robust Combinatorial Optimization with Budget Uncertainty".
 
-You can optionally specify a time limit in seconds, a destination for a log file and a destination for a solution file. For this, optionally append further arguments of the form `timelimit=*`, `logpath=*`, and `solutionpath=*` in any order.
+You can optionally specify a time limit in seconds, a destination for a log file, a destination for a results file (with objective values/gaps/computation time...), and a destination for a solution file. For this, optionally append further arguments of the form `timelimit=*`, `logpath=*`, `resultspath=*`, and `solutionpath=*` in any order.
 
 Optional strategies for the algorithm are chosen by appending them to the arguments above. For example, the branch and bound algorithm has a parameter `BoundingLPOptimalityCutsStrategy`, in which we choose whether to use optimality cuts when solving LPs or not. The corresponding choices to specify in the arguments are `LPOPTCUTS_ENABLE` or `LPOPTCUTS_DISABLE`. We refer to the strategy classes of each algorithm for the different available options.
 

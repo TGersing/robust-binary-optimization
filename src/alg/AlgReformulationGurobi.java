@@ -7,6 +7,7 @@ import java.util.List;
 import alg.RobustAlgorithm.RobustAlgorithmStrategies.CliqueStrategy;
 import alg.RobustAlgorithm.RobustAlgorithmStrategies.FilterStrategy;
 import gurobi.GRB;
+import gurobi.GRBCallback;
 import gurobi.GRBException;
 import gurobi.GRBLinExpr;
 import gurobi.GRBModel;
@@ -143,6 +144,22 @@ public class AlgReformulationGurobi extends AbstractAlgorithm implements RobustA
 			}
 		}
 		
+		model.setCallback(new PrimalDualCallback());
 		model.update();
 	}
+	
+	/**
+	 * Callback for computing the primal dual integral
+	 */
+	private class PrimalDualCallback extends GRBCallback {
+		@Override
+		protected void callback() {
+			if (where == GRB.CB_MIP) {
+				try {
+					primalDualIntegral.update(getDoubleInfo(GRB.CB_MIP_OBJBST), getDoubleInfo(GRB.CB_MIP_OBJBND), false);
+				} catch (GRBException e) {}
+			}
+		}
+	}
+
 }

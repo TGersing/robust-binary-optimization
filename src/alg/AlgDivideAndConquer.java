@@ -145,7 +145,9 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 					+ "Elapsed Time = "+(System.nanoTime()-startTime)/Math.pow(10, 9)+"\n"
 					+ "Number Remaining Nodes = "+remainingNodes.size()
 					+ "\nNumber Remaining Possible Z = "+numberRemainingPossibleZ
-					+ "\nCurrent Primal Bound = "+primalBound;
+					+ "\nCurrent Primal Bound = "+primalBound
+					+ "\nCurrent Dual Bound = "+dualBound
+					+ "\nRelative Optimality Gap = "+(AbstractAlgorithm.getRelativeGap(primalBound, dualBound)*100)+"%";
 			writeOutput(output);
 			
 			//We select the first node in our tree.
@@ -284,9 +286,12 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 		
 		//Updates the individual dual bounds and the dual bounds for all nodes.
 		chosenPossibleZ.estimateDualBounds(subproblemNominal.getDualBound());
+		dualBound = minimumDualBoundConsideredSubproblems;
 		for (DnCNode node : remainingNodes) {
 			node.updateDualBound();
+			dualBound = Math.min(dualBound, node.getDualBound());
 		}
+		primalDualIntegral.update(primalBound, dualBound, false);
 	}
 	
 	/**

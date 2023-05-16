@@ -166,6 +166,7 @@ public class AlgBranchAndBound extends AbstractAlgorithm implements RobustAlgori
 					+ "\nCurrent Dual Bound = "+dualBound
 					+ "\nRelative Optimality Gap = "+(AbstractAlgorithm.getRelativeGap(primalBound, dualBound)*100)+"%";
 			writeOutput(output);
+			primalDualIntegral.update(primalBound, dualBound, false);
 			
 			//Solves the integer robust subproblem if the current node is marked correspondingly.
 			if (chosenNode.isSolveInteger()) {

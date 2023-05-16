@@ -76,7 +76,7 @@ public class AlgCuttingPlanesGurobi extends AbstractAlgorithm implements RobustA
 		//PreCrush and lazyConstraints have to be set to 1 for the separation.
 		model.set(GRB.IntParam.PreCrush, 1);
 		model.set(GRB.IntParam.LazyConstraints, 1);
-		model.setCallback(new Callback());
+		model.setCallback(new CutCallback());
 		
 		model.update();
 	}
@@ -86,7 +86,7 @@ public class AlgCuttingPlanesGurobi extends AbstractAlgorithm implements RobustA
 	/**
 	 * Implements the separation algorithm searching for violated constraints.
 	 */
-	private class Callback extends GRBCallback {
+	private class CutCallback extends GRBCallback {
 		//If we cut-off an incumbent solution then we can repair it by setting the appropriate value for robustnessVar.
 		//The repaired incumbent cannot be added in the same call where the lazy constraint is added.
 		//We store it until we reach the next node to add the incumbent.
@@ -96,6 +96,12 @@ public class AlgCuttingPlanesGurobi extends AbstractAlgorithm implements RobustA
 		
 		@Override
 		protected void callback() {
+			if (where == GRB.CB_MIP) {
+				try {
+					primalDualIntegral.update(getDoubleInfo(GRB.CB_MIP_OBJBST), getDoubleInfo(GRB.CB_MIP_OBJBND), false);
+				} catch (GRBException e) {}
+			}
+
 			try {
 				//We separate cuts corresponding to scenarios while we are in the root node.
 				//Also, every time we find a new incumbent, we also check whether it violates a scenario.

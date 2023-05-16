@@ -4,6 +4,7 @@ import java.io.IOException;
 import java.util.LinkedHashMap;
 
 import gurobi.GRB;
+import gurobi.GRBCallback;
 import gurobi.GRBException;
 import gurobi.GRBLinExpr;
 import gurobi.GRBModel;
@@ -117,6 +118,22 @@ public class AlgRP3Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 		expr.addTerm(-1, ny[0]);
 		model.addConstr(expr, GRB.GREATER_EQUAL, 0, "");
 		
+		model.setCallback(new PrimalDualCallback());
 		model.update();
 	}
+	
+	/**
+	 * Callback for computing the primal dual integral
+	 */
+	private class PrimalDualCallback extends GRBCallback {
+		@Override
+		protected void callback() {
+			if (where == GRB.CB_MIP) {
+				try {
+					primalDualIntegral.update(getDoubleInfo(GRB.CB_MIP_OBJBST), getDoubleInfo(GRB.CB_MIP_OBJBND), false);
+				} catch (GRBException e) {}
+			}
+		}
+	}
+
 }

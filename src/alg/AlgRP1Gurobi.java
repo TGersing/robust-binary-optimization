@@ -7,6 +7,7 @@ import java.util.List;
 import alg.RobustAlgorithm.RobustAlgorithmStrategies.CliqueStrategy;
 import alg.RobustAlgorithm.RobustAlgorithmStrategies.FilterStrategy;
 import gurobi.GRB;
+import gurobi.GRBCallback;
 import gurobi.GRBException;
 import gurobi.GRBLinExpr;
 import gurobi.GRBModel;
@@ -84,7 +85,7 @@ public class AlgRP1Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 		List<PossibleZ> possibleZs = computePossibleZs(robustProblem.getUncertainVariables(), robustProblem.getGamma(), robustAlgorithmStrategies, conflictGraph, algorithmParameters);
 		
 		//Queries the model and uncertain variables from the given robust problem.
-		GRBModel model = robustProblem.getModel();		
+		GRBModel model = robustProblem.getModel();
 		Variable[] uncertainVariables = robustProblem.getUncertainVariables();
 
 		//Adds the variables z, p, lambda, and omega to the model
@@ -158,7 +159,21 @@ public class AlgRP1Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 			}
 			model.addConstr(p[i], GRB.GREATER_EQUAL, chooseP, "chooseP"+i);
 		}
-		
+		model.setCallback(new PrimalDualCallback());
 		model.update();
+	}
+	
+	/**
+	 * Callback for computing the primal dual integral
+	 */
+	private class PrimalDualCallback extends GRBCallback {
+		@Override
+		protected void callback() {
+			if (where == GRB.CB_MIP) {
+				try {
+					primalDualIntegral.update(getDoubleInfo(GRB.CB_MIP_OBJBST), getDoubleInfo(GRB.CB_MIP_OBJBND), false);
+				} catch (GRBException e) {}
+			}
+		}
 	}
 }

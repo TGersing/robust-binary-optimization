@@ -62,6 +62,11 @@ public abstract class AbstractAlgorithm {
 	protected long endTime;
 	
 	/**
+	 * Integral of the primal dual gap.
+	 */
+	protected PrimalDualIntegral primalDualIntegral;
+	
+	/**
 	 * Parameters for the algorithm.
 	 */
 	protected AlgorithmParameters algorithmParameters = new AlgorithmParameters();
@@ -84,15 +89,17 @@ public abstract class AbstractAlgorithm {
 	
 	/**
 	 * Initializes the start time and potential deadline, executes the algorithm,
-	 * and writes the computed bounds as well as the gap and the elapsed time to the log. 
+	 * and writes the computed bounds as well as the gap, integral, and the elapsed time to the log. 
 	 */
 	public void solve(Optional<Integer> timeLimit) throws IOException, GRBException {
 		this.startTime = System.nanoTime();
+		this.primalDualIntegral = new PrimalDualIntegral();
 		if (timeLimit.isPresent()) {
 			this.deadline = Optional.of(System.nanoTime() + (long)Math.pow(10, 9)*timeLimit.get());
 		}
 		executeAlgorithm();
 		endTime = System.nanoTime();
+		primalDualIntegral.update(primalBound, dualBound, true);
 		
 		String output = "\n##########################################################\n"
 				+ "##### Finished Solving"
@@ -100,6 +107,7 @@ public abstract class AbstractAlgorithm {
 				+ "Primal Bound: "+primalBound+"\n"
 				+ "Dual Bound: "+dualBound+"\n"
 				+ "Relative Gap: "+(100*getRelativeGap())+"%\n"
+				+ "Primal Dual Integral: "+primalDualIntegral.getIntegral()+"\n"
 				+ "Elapsed Time: "+getElapsedTime()+" sec";
 		writeOutput(output);
 	}
@@ -182,6 +190,13 @@ public abstract class AbstractAlgorithm {
 	 */
 	public boolean isOptimal() {
 		return isOptimal(this.getPrimalBound(), this.getDualBound());
+	}
+	
+	/**
+	 * Returns the integral over the primal dual gap.
+	 */
+	public double getPrimalDualIntegral() {
+		return this.primalDualIntegral.getIntegral();
 	}
 	
 	/**
@@ -434,5 +449,56 @@ public abstract class AbstractAlgorithm {
 		}
 
 		abstract void setDefaultStrategies();
+	}
+	
+	/**
+	 * Computes the integral of the gap between the primal and dual bound.
+	 * Here, the gap is defined as abs(primal-dual)/max(abs(primal), abs(dual)), such that it is bound by 1.
+	 * For accuracy, the integral should be called once new bounds are available.
+	 * It will be called at the end of the algorithm.
+	 * If the bounds are not updated in between then the integral will be equal to the elapsed time. 
+	 */
+	protected class PrimalDualIntegral {
+		private double integral;
+		
+		private double lastPrimalBound;
+		private double lastDualBound;
+		private long lastTimeStamp;
+		
+		private PrimalDualIntegral() {
+			integral = 0;
+			lastPrimalBound = DEFAULT_PRIMAL_BOUND;
+			lastDualBound = DEFAULT_DUAL_BOUND;
+			lastTimeStamp = startTime;
+		}
+		
+		void update(double primalBound, double dualBound, boolean forceUpdate) {
+			long time = System.nanoTime();
+			if (primalBound != lastPrimalBound || dualBound != lastDualBound || forceUpdate) {
+				double primalDualGap = computePrimalDualGap(primalBound, dualBound);
+				integral += (time - lastTimeStamp)/Math.pow(10, 9)*primalDualGap;
+				
+				lastTimeStamp = time;
+				lastPrimalBound = primalBound;
+				lastDualBound = dualBound;
+			}
+		}
+		
+		private double computePrimalDualGap(double primalBound, double dualBound) {
+			if (lastPrimalBound >= Math.pow(10, 100) || lastDualBound <= -Math.pow(10, 100) || (lastPrimalBound > 0 && lastDualBound < 0)) {
+				return 1;
+			}
+			else if (Math.abs(lastPrimalBound - lastDualBound) <= algorithmParameters.getAbsoluteGapTolerance()) {
+				return 0;
+			}
+			else {
+				return Math.abs(lastPrimalBound - lastDualBound)/Math.max(Math.abs(lastPrimalBound), Math.abs(lastDualBound));
+			}
+
+		}
+		
+		double getIntegral() {
+			return integral;
+		}
 	}
 }

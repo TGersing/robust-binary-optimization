@@ -52,6 +52,7 @@ public class AlgorithmExecuter {
 		Optional<Integer> timeLimit = Optional.empty();
 		AlgorithmParameters algorithmParameters = new AlgorithmParameters();
 		Optional<String> solutionPath = Optional.empty();
+		Optional<String> resultsPath = Optional.empty();
 		
 		List<String> argList = new ArrayList<String>(Arrays.asList(args));
 		//If arguments are given
@@ -68,18 +69,26 @@ public class AlgorithmExecuter {
 			//Obtains optional arguments.
 			Iterator<String> argIterator = argList.iterator();
 			while (argIterator.hasNext()) {
-				String[] splitargs = argIterator.next().split("=");
-				if (splitargs[0].toLowerCase().equals("timelimit")) {
-					timeLimit = Optional.of(Integer.parseInt(splitargs[1]));
-					argIterator.remove();
-				}
-				else if (splitargs[0].toLowerCase().equals("logpath")) {
-					algorithmParameters.setLogPath(Optional.of(splitargs[1]));
-					argIterator.remove();
-				}
-				else if (splitargs[0].toLowerCase().equals("solutionpath")) {
-					solutionPath = Optional.of(splitargs[1]);
-					argIterator.remove();
+				String arg = argIterator.next();
+				if (arg.contains("=")) {
+					String key = arg.substring(0, arg.indexOf('='));
+					String value = arg.substring(arg.indexOf('=')+1);
+					if (key.toLowerCase().equals("timelimit")) {
+						timeLimit = Optional.of(Integer.parseInt(value));
+						argIterator.remove();
+					}
+					else if (key.toLowerCase().equals("logpath")) {
+						algorithmParameters.setLogPath(Optional.of(value));
+						argIterator.remove();
+					}
+					else if (key.toLowerCase().equals("resultspath")) {
+						resultsPath = Optional.of(value);
+						argIterator.remove();
+					}
+					else if (key.toLowerCase().equals("solutionpath")) {
+						solutionPath = Optional.of(value);
+						argIterator.remove();
+					}
 				}
 			}
 		}
@@ -105,12 +114,52 @@ public class AlgorithmExecuter {
 				algorithmParameters.setLogPath(Optional.of(input));
 			}
 			
+			System.out.println("State the destination for the results file (leave blank for no results file):");
+			input = consoleReader.readLine();
+			if (!input.equals("")) {
+				resultsPath = Optional.of(input);
+			}
+			
 			System.out.println("State the destination for the solution file (leave blank for no solution file):");
 			input = consoleReader.readLine();
 			if (!input.equals("")) {
 				solutionPath = Optional.of(input);
 			}
 		}
+		
+		String resultsOutput = "";
+		if (resultsPath.isPresent()) {
+			//Clears results file
+			FileWriter resultsWriter = new FileWriter(resultsPath.get(), true);
+			//Writes results file
+			resultsOutput = "Instance"
+					+ ";Robustness Components"
+					+ ";Algorithm"
+					+ ";Strategies"
+					+ ";Primal Bound"
+					+ ";Dual Bound"
+					+ ";Primal Dual Integral"
+					+ ";Relative Gap"
+					+ ";Optimal"
+					+ ";Elapsed Time\n";
+			
+			resultsOutput += problemPath.split("/")[problemPath.split("/").length-1];
+			resultsOutput += ";"+robustPath.split("/")[robustPath.split("/").length-1];
+			resultsOutput += ";"+algorithmName;
+			resultsOutput += ";";
+			for (int i = 0; i < argList.size(); i++) {
+				if (i==0) {
+					resultsOutput += argList.get(i);
+				}
+				else {
+					resultsOutput += "_"+argList.get(i);
+				}
+			}
+			resultsWriter.write(resultsOutput);
+			resultsWriter.write(";No Results Available\n");
+			resultsWriter.close();
+		}
+
 		
 		//Initializes the chosen algorithm
 		AbstractAlgorithm algo = null;
@@ -170,6 +219,19 @@ public class AlgorithmExecuter {
 				output += var.getModelVariable().get(GRB.StringAttr.VarName) + "=" + solution.get(var)+"\n";
 			}
 			AbstractAlgorithm.writeOutput(output, solutionPath);
+		}
+		if (resultsPath.isPresent()) {
+			//Clears results file
+			FileWriter resultsWriter = new FileWriter(resultsPath.get(), false);
+			resultsWriter.write(resultsOutput);
+			
+			resultsWriter.write(";"+algo.getPrimalBound()
+					+ ";"+algo.getDualBound()
+					+ ";"+algo.getPrimalDualIntegral()
+					+ ";"+algo.getRelativeGap()
+					+ ";"+algo.isOptimal()
+					+ ";"+algo.getElapsedTime()+"\n");
+			resultsWriter.close();
 		}
 	}
 }

@@ -98,7 +98,7 @@ public class AlgRP2Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 		//Adds the callback for separation of valid inequalities.
 		//PreCrush has to be set to 1 for the separation.
 		model.set(GRB.IntParam.PreCrush, 1);
-		model.setCallback(new Callback());
+		model.setCallback(new RP2Callback());
 		
 		model.update();
 	}
@@ -109,9 +109,15 @@ public class AlgRP2Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 	 * Every negative length path corresponds to a violated cut.
 	 * The graph is leveled with respect to the deviations and thus acyclic.
 	 */
-	private class Callback extends GRBCallback {
+	private class RP2Callback extends GRBCallback {
 		@Override
 		protected void callback() {
+			if (where == GRB.CB_MIP) {
+				try {
+					primalDualIntegral.update(getDoubleInfo(GRB.CB_MIP_OBJBST), getDoubleInfo(GRB.CB_MIP_OBJBND), false);
+				} catch (GRBException e) {}
+			}
+
 			try {
 				//Cuts can be added when the callback is called from a MIP node and the node's LP relaxation is solved to optimality. 
 				if (where == GRB.CB_MIPNODE && getIntInfo(GRB.CB_MIPNODE_STATUS) == GRB.Status.OPTIMAL) {
