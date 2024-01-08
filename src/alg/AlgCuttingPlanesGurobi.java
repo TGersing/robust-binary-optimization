@@ -44,17 +44,19 @@ public class AlgCuttingPlanesGurobi extends AbstractAlgorithm implements RobustA
 				+ "##### Solving Problem via Separating Scenarios"
 				+ "\n######################################################";
 		writeOutput(output);
-
+		
 		reformulateModel();
 		
 		robustProblem.solve(getRemainingTime());
-		primalBound = robustProblem.getPrimalBound();
-		dualBound = robustProblem.getDualBound();
+		setPrimalBound(robustProblem.getPrimalBound());
+		setDualBound(robustProblem.getDualBound());
 		
-		//Stores best solution found
-		solution = new LinkedHashMap<Variable, Double>(robustProblem.getNominalVariables().length);
-		for (int i = 0; i < robustProblem.getNominalVariables().length; i++) {
-			solution.put(robustProblem.getNominalVariables()[i], robustProblem.getNominalVariablesSolutionValues()[i]);
+		//Stores best solution found, if available
+		if (robustProblem.getNominalVariablesSolutionValues() != null) {
+			solution = new LinkedHashMap<Variable, Double>(robustProblem.getNominalVariables().length);
+			for (int i = 0; i < robustProblem.getNominalVariables().length; i++) {
+				solution.put(robustProblem.getNominalVariables()[i], robustProblem.getNominalVariablesSolutionValues()[i]);
+			}
 		}
 	}
 
@@ -98,13 +100,14 @@ public class AlgCuttingPlanesGurobi extends AbstractAlgorithm implements RobustA
 		protected void callback() {
 			if (where == GRB.CB_MIP) {
 				try {
-					primalDualIntegral.update(getDoubleInfo(GRB.CB_MIP_OBJBST), getDoubleInfo(GRB.CB_MIP_OBJBND), false);
+					setPrimalBound(getDoubleInfo(GRB.CB_MIP_OBJBST));
+					setDualBound(getDoubleInfo(GRB.CB_MIP_OBJBND));
 				} catch (GRBException e) {}
 			}
 
 			try {
 				//We separate cuts corresponding to scenarios while we are in the root node.
-				//Also, every time we find a new incumbent, we also check whether it violates a scenario.
+				//Also, every time we find a new incumbent, we check whether it violates a scenario.
 				if ((where == GRB.CB_MIPNODE && getDoubleInfo(GRB.CB_MIPNODE_NODCNT) == 0 && getIntInfo(GRB.CB_MIPNODE_STATUS) == GRB.Status.OPTIMAL)
 						|| where == GRB.CB_MIPSOL) {
 					Variable[] uncertainVariables = robustProblem.getUncertainVariables();
@@ -113,7 +116,7 @@ public class AlgCuttingPlanesGurobi extends AbstractAlgorithm implements RobustA
 
 					//Queries the values of the uncertain variables and the rubustnessVar.
 					double[] varValues;
-					Double robustnessVarValue;
+					double robustnessVarValue;
 					if (where == GRB.CB_MIPNODE) {
 						varValues = getNodeRel(uncertainModelVariables);
 						robustnessVarValue = getNodeRel(robustnessVar);
@@ -124,38 +127,33 @@ public class AlgCuttingPlanesGurobi extends AbstractAlgorithm implements RobustA
 					}
 					
 					//The worst case scenario includes the variables where d[i]*x[i] is as high as possible, with d being the deviation.
-					//We store all variables with their corresponding value d[i]*x[i] as a tuple in a priority queue.
-					//The tuples are sorted with respect to d[i]*x[i].
-					//The queue contains at most ceil(Gamma) variables, since not more variables will deviate.
-					PriorityQueue<IndexValueTuple> highestValuesTimesDeviations = new PriorityQueue<IndexValueTuple>();
+					//We store up to ceil(Gamma) indices with the highest d[i]*x[i], since not more variables will deviate.
+					PriorityQueue<Integer> highestVarIndicesValuesTimesDeviations = new PriorityQueue<Integer>(
+							(index1, index2) -> Double.compare(varValues[index1]*uncertainVariables[index1].getDeviation(), varValues[index2]*uncertainVariables[index2].getDeviation()));
 					for (int i = 0; i < varValues.length; i++) {
-						double valueTimesDeviation = varValues[i]*uncertainVariables[i].getDeviation();
-						if (highestValuesTimesDeviations.size() < Math.ceil(Gamma)) {
-							highestValuesTimesDeviations.add(new IndexValueTuple(i, valueTimesDeviation));
-						}
-						else if (valueTimesDeviation > highestValuesTimesDeviations.peek().getValue()) {
-							highestValuesTimesDeviations.remove();
-							highestValuesTimesDeviations.add(new IndexValueTuple(i, valueTimesDeviation));
+						highestVarIndicesValuesTimesDeviations.add(i);
+						if (highestVarIndicesValuesTimesDeviations.size() > Math.ceil(Gamma)) {
+							highestVarIndicesValuesTimesDeviations.remove();
 						}
 					}
 					
 					//Computes the sum of the deviation for the worst case scenario
 					double robustnessValue = 0;
-					for (IndexValueTuple tuple : highestValuesTimesDeviations) {
-						robustnessValue += tuple.getValue();
+					for (Integer index : highestVarIndicesValuesTimesDeviations) {
+						robustnessValue += varValues[index]*uncertainVariables[index].getDeviation();
 					}
 					//If Gamma is not integer then the variable with the smallest value d[i]*x[i] differs only by a fraction.
-					robustnessValue -= (Math.ceil(Gamma) - Gamma)*highestValuesTimesDeviations.peek().getValue();
+					robustnessValue -= (Math.ceil(Gamma) - Gamma)*varValues[highestVarIndicesValuesTimesDeviations.peek()]*uncertainVariables[highestVarIndicesValuesTimesDeviations.peek()].getDeviation();
 					
 					//If the worst case value is greater than robustnessVarValue then we have found a violated cut. 
 					if (robustnessValue > robustnessVarValue) {
 						//Add the deviating variables of the worst case scenario to the cut.
 						GRBLinExpr cutExpr = new GRBLinExpr();
-						for (IndexValueTuple tuple : highestValuesTimesDeviations) {
-							cutExpr.addTerm(uncertainVariables[tuple.getIndex()].getDeviation(), uncertainModelVariables[tuple.getIndex()]);
+						for (Integer index : highestVarIndicesValuesTimesDeviations) {
+							cutExpr.addTerm(uncertainVariables[index].getDeviation(), uncertainModelVariables[index]);
 						}
 						//If Gamma is not integer then the variable with the smallest value d[i]*x[i] differs only by a fraction.
-						cutExpr.addTerm(-(Math.ceil(Gamma) - Gamma)*uncertainVariables[highestValuesTimesDeviations.peek().getIndex()].getDeviation(), uncertainModelVariables[highestValuesTimesDeviations.peek().getIndex()]);
+						cutExpr.addTerm(-(Math.ceil(Gamma) - Gamma)*uncertainVariables[highestVarIndicesValuesTimesDeviations.peek()].getDeviation(), uncertainModelVariables[highestVarIndicesValuesTimesDeviations.peek()]);
 						
 						//The sum has to be smaller than the value of robustnessVar.
 						cutExpr.addTerm(-1, robustnessVar);
@@ -171,6 +169,7 @@ public class AlgCuttingPlanesGurobi extends AbstractAlgorithm implements RobustA
 						}
 					}
 				}
+				
 				//Adds the repaired incumbent solution at the next possible MIP node.
 				if (hasIncumbent && where == GRB.CB_MIPNODE) {
 					setSolution(robustnessVar, incumbentRobustnessValue);
@@ -180,32 +179,6 @@ public class AlgCuttingPlanesGurobi extends AbstractAlgorithm implements RobustA
 			} catch (GRBException e1) {
 				e1.printStackTrace();
 			}
-		}
-	}
-	
-	/**
-	 * Auxiliary class for storing indices of variables together with a value in a tuple.
-	 * To allow for sorting, the tuple is comparable with respect to the value.  
-	 */
-	private class IndexValueTuple implements Comparable<IndexValueTuple>{
-		int index;
-		double value;
-		
-		public IndexValueTuple(int index, double value) {
-			this.index = index;
-			this.value = value;
-		}
-
-		public int getIndex() {
-			return index;
-		}
-		public double getValue() {
-			return value;
-		}
-
-		@Override
-		public int compareTo(IndexValueTuple tuple) {
-			return Double.compare(this.value, tuple.value);
 		}
 	}
 }

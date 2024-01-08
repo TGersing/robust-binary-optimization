@@ -15,6 +15,9 @@ import java.util.Set;
 import java.util.function.Function;
 
 import alg.AlgRecycleInequalitiesGurobi.RecyclingStrategies.Relaxation;
+import alg.RobustAlgorithm.RobustAlgorithmStrategies.CliqueStrategy;
+import alg.RobustAlgorithm.RobustAlgorithmStrategies.FilterStrategy;
+import util.CliquePartitioning;
 import util.ConflictGraph;
 import util.Variable;
 import gurobi.GRB;
@@ -44,9 +47,14 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 	private RecyclingStrategies recyclingStrategies;
 	
 	/**
-	 * The p variables from the Bertsimas Sim reformulation.
+	 * The highest possible optimal value of z, used for substituting p variables and strengthening the formulation. 
 	 */
-	private GRBVar[] p;
+	private double highestPossibleZ;
+	
+	/**
+	 * The (substituted) p variables from the Bertsimas Sim reformulation.
+	 */
+	private GRBVar[] pPrime;
 	
 	/**
 	 * The z variable from the Bertsimas Sim reformulation.
@@ -117,8 +125,8 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 		//Solves the problem in the remaining time
 		model.update();
 		robustProblem.solve(getRemainingTime());
-		primalBound = robustProblem.getPrimalBound();
-		dualBound = robustProblem.getDualBound();
+		setPrimalBound(robustProblem.getPrimalBound());
+		setDualBound(robustProblem.getDualBound());
 		
 		//Initializes solution
 		solution = new LinkedHashMap<Variable, Double>(robustProblem.getNominalVariables().length);
@@ -132,12 +140,12 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 				break;
 			}
 			
-			primalBound = robustProblem.getPrimalBound();
-			dualBound = robustProblem.getDualBound();
+			setPrimalBound(robustProblem.getPrimalBound());
+			setDualBound(robustProblem.getDualBound());
 			
 			//Queries the values of the current relaxed solution.
 			double[] xValues = model.get(GRB.DoubleAttr.X, robustProblem.getNominalModelVariables());
-			double[] pValues = model.get(GRB.DoubleAttr.X, p);
+			double[] pPrimeValues = model.get(GRB.DoubleAttr.X, pPrime);
 			Double zValue = z.get(GRB.DoubleAttr.X);
 			
 			//Stores solution
@@ -146,10 +154,10 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 			}
 			
 			//Separates violated cuts
-			Collection<RobustInequality> violatedRobustInequalities = separator.getViolatedRobustInequalities(xValues, pValues, zValue, algorithmParameters.getFeasibilityTolerance());
+			Collection<RobustInequality> violatedRobustInequalities = separator.getViolatedRobustInequalities(xValues, pPrimeValues, zValue, algorithmParameters.getFeasibilityTolerance());
 			//Adds cuts to the model
 			for (RobustInequality robustInequality : violatedRobustInequalities) {
-				double violation = robustInequality.computeViolation(xValues, pValues, zValue);
+				double violation = robustInequality.computeViolation(xValues, pPrimeValues, zValue);
 				robustInequality.writeSeparationMessage(violation);
 				model.addConstr(robustInequality.getLHSexpr(), GRB.GREATER_EQUAL, robustInequality.getConstant(), "violatedRecycledIneq");
 			}
@@ -171,12 +179,11 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 			}
 		}
 		
-		//Stores solution
+		//Stores best solution found, if available
 		if (robustProblem.getNominalVariablesSolutionValues() != null) {
 			for (int i = 0; i < robustProblem.getNominalVariables().length; i++) {
 				solution.put(robustProblem.getNominalVariables()[i], robustProblem.getNominalVariablesSolutionValues()[i]);
 			}
-
 		}
 	}
 
@@ -185,6 +192,23 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 	 * Also initializes the separation of recycled inequalities or adds recycled inequalities directly to the model.
 	 */
 	private void reformulateModel() throws GRBException, IOException {
+		//Computes a conflict graph and clique partitioning if the corresponding strategy is chosen
+		if (recyclingStrategies.getCliqueStrategy() == CliqueStrategy.CLIQUES_ENABLE || recyclingStrategies.getFilterStrategy() == FilterStrategy.FILTERINGZ_ENABLE) {
+			String output = "\n###########################\n"
+					+ "##### Start Preprocessing"
+					+ "\n###########################";
+			writeOutput(output);
+		}
+		ConflictGraph conflictGraph = null;
+		if (recyclingStrategies.getCliqueStrategy() == RobustAlgorithmStrategies.CliqueStrategy.CLIQUES_ENABLE) {
+			//Computes cliques which are stored with the variables and used for better filtering of z.
+			conflictGraph = new ConflictGraph(robustProblem.getModel(), robustProblem.getUncertainModelVariables(), algorithmParameters);
+			new CliquePartitioning(robustProblem.getUncertainVariables(), conflictGraph, algorithmParameters);
+		}
+		
+		//Computes the highest possible optimal choice for z respecting the chosen filtering and clique strategies.
+		highestPossibleZ = computeHighestPossibleZ(robustProblem.getUncertainVariables(), robustProblem.getGamma(), recyclingStrategies, algorithmParameters);
+
 		//Queries the model and uncertain variables from the given robust problem.
 		GRBModel model = robustProblem.getModel();
 		Variable[] uncertainVariables = robustProblem.getUncertainVariables();
@@ -209,59 +233,73 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 			minDev = Math.min(minDev, var.getDeviation());
 			maxDev = Math.max(maxDev, var.getDeviation());
 		}
+		minDev = Math.min(minDev, highestPossibleZ);
+		maxDev = Math.min(maxDev, highestPossibleZ);
 		scalingQuotient = Math.sqrt(minDev*maxDev);
 		
 		//Adds the variables z and p from the reformulation, scaled with the scalingQuotient.
 		z = model.addVar(0, Double.MAX_VALUE, scalingQuotient*robustProblem.getGamma(), GRB.CONTINUOUS, "z");
-		p = new GRBVar[uncertainVariables.length];
-		for (int i = 0; i < p.length; i++) {
-			p[i] = model.addVar(0, Double.MAX_VALUE, scalingQuotient, GRB.CONTINUOUS, "p"+i);
+		pPrime = new GRBVar[uncertainVariables.length];
+		for (int i = 0; i < pPrime.length; i++) {
+			pPrime[i] = model.addVar(0, Double.MAX_VALUE, scalingQuotient, GRB.CONTINUOUS, "pPrime"+i);
 		}
 		
 		//Alters the objective function by adding z and p.
 		GRBLinExpr objLinExpr = (GRBLinExpr) model.getObjective();
-		for (int i = 0; i < p.length; i++) {
-			objLinExpr.addTerm(scalingQuotient, p[i]);
+		for (int i = 0; i < pPrime.length; i++) {
+			objLinExpr.addTerm(scalingQuotient, pPrime[i]);
 		}
 		objLinExpr.addTerm(scalingQuotient*robustProblem.getGamma(), z);
+		
+		//If a variable's deviation is higher than the highest possible optimal value for z,
+		//then we already add the difference to the obj coeff of the variable.
+		for (Variable uncertainVariable : uncertainVariables) {
+			if (uncertainVariable.getDeviation() > highestPossibleZ) {
+				objLinExpr.addTerm(uncertainVariable.getDeviation() - highestPossibleZ, uncertainVariable.getModelVariable());
+			}
+		}
+
 		model.setObjective(objLinExpr);
 				
-		//Adds the constraint of the form z+p>=d/scalingQuotient*x, with d being the deviation.
+		//Adds the constraint of the form z+p>=d/scalingQuotient*x, with d being the minimum of deviation and highest possible z.
 		for (int i = uncertainVariables.length-1; i >= 0; i--) {
 			Variable var = uncertainVariables[i];
 			GRBLinExpr robustnessExpr = new GRBLinExpr();
-			robustnessExpr.addTerm(1, p[i]);
+			robustnessExpr.addTerm(1, pPrime[i]);
 			robustnessExpr.addTerm(1, z);
-			robustnessExpr.addTerm(-var.getDeviation()/scalingQuotient, var.getModelVariable());
+			robustnessExpr.addTerm(-Math.min(var.getDeviation(), highestPossibleZ)/scalingQuotient, var.getModelVariable());
 			model.addConstr(robustnessExpr, GRB.GREATER_EQUAL, 0, "");
 		}
 		model.update();
 		
-		List<RecyclableInequality> recyclableInequalities = null;
+		List<RecyclableInequality> recyclableConstraints = null;
 		//Sets separators if the corresponding options are chosen 
 		if (recyclingStrategies.separationStrategy == RecyclingStrategies.SeparationRecyclingStrategy.SEPRECYCLE_CONSTRAINTS) {
-			recyclableInequalities = computeRecyclableInequalities();
-			separator = new RecyclableSeparator(recyclableInequalities);
+			recyclableConstraints = computeRecyclableConstraints();
+			separator = new RecyclableSeparator(recyclableConstraints);
 		}
 		else if (recyclingStrategies.separationStrategy == RecyclingStrategies.SeparationRecyclingStrategy.SEPRECYCLE_LP) {
-			recyclableInequalities = computeRecyclableInequalities();
-			separator = new LPSeparator(recyclableInequalities);
+			recyclableConstraints = computeRecyclableConstraints();
+			separator = new LPSeparator(recyclableConstraints);
 		}
 		else if (recyclingStrategies.separationStrategy == RecyclingStrategies.SeparationRecyclingStrategy.SEPRECYCLE_LIFT) {
 			separator = new LiftingSeparator();
 		}
 		else if (recyclingStrategies.separationStrategy == RecyclingStrategies.SeparationRecyclingStrategy.SEPRECYCLE_CLIQUES) {
-			separator = new CliqueSeparator();
+			if (conflictGraph == null) {
+				conflictGraph = new ConflictGraph(robustProblem.getModel(), robustProblem.getUncertainModelVariables(), algorithmParameters);
+			}
+			separator = new CliqueSeparator(conflictGraph);
 		}
 		
 		//Adds recycled inequalities directly to the model if the corresponding strategy is chosen.
 		if (recyclingStrategies.directRecyclingStrategy == RecyclingStrategies.DirectRecyclingStrategy.DIRRECYCLE_CONSTRAINTS) {
-			if (recyclableInequalities == null) {
-				recyclableInequalities = computeRecyclableInequalities();
+			if (recyclableConstraints == null) {
+				recyclableConstraints = computeRecyclableConstraints();
 			}
-			for (RecyclableInequality recylableInequality: recyclableInequalities) {
-				RobustInequality recycledInequality = recylableInequality.getRecycledInequality();
-				model.addConstr(recycledInequality.getLHSexpr(), GRB.GREATER_EQUAL, recycledInequality.getConstant(), "");
+			for (RecyclableInequality recylableConstraint: recyclableConstraints) {
+				RobustInequality recycledCOnstraint = recylableConstraint.getRecycledInequality();
+				model.addConstr(recycledCOnstraint.getLHSexpr(), GRB.GREATER_EQUAL, recycledCOnstraint.getConstant(), "");
 			}
 		}
 		
@@ -279,7 +317,8 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 			//Updates the primal dual integral
 			if (where == GRB.CB_MIP) {
 				try {
-					primalDualIntegral.update(getDoubleInfo(GRB.CB_MIP_OBJBST), getDoubleInfo(GRB.CB_MIP_OBJBND), false);
+					setPrimalBound(getDoubleInfo(GRB.CB_MIP_OBJBST));
+					setDualBound(getDoubleInfo(GRB.CB_MIP_OBJBND));
 				} catch (GRBException e) {}
 			}
 			
@@ -288,22 +327,20 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 				if (separator != null && where == GRB.CB_MIPNODE && getDoubleInfo(GRB.CB_MIPNODE_NODCNT) == 0 && getIntInfo(GRB.CB_MIPNODE_STATUS) == GRB.Status.OPTIMAL) {
 					//Queries the values of the current relaxed solution.
 					double[] xValues = getNodeRel(robustProblem.getNominalModelVariables());
-					double[] pValues = getNodeRel(p);
+					double[] pPrimeValues = getNodeRel(pPrime);
 					Double zValue = getNodeRel(z);
 					
 					//Passes the current solution to the separator 
-					Collection<RobustInequality> robustInequalities = separator.getViolatedRobustInequalities(xValues, pValues, zValue, algorithmParameters.getFeasibilityTolerance());
+					Collection<RobustInequality> violatedRobustInequalities = separator.getViolatedRobustInequalities(xValues, pPrimeValues, zValue, algorithmParameters.getFeasibilityTolerance());
 					
-					//Adds recycled inequalities if violated
-					for (RobustInequality robustInequality : robustInequalities) {
-						double violation = robustInequality.computeViolation(xValues, pValues, zValue);
+					//Adds violated recycled iequalities
+					for (RobustInequality robustInequality : violatedRobustInequalities) {
+						double violation = robustInequality.computeViolation(xValues, pPrimeValues, zValue);
 						robustInequality.writeSeparationMessage(violation);
 						addCut(robustInequality.getLHSexpr(), GRB.GREATER_EQUAL, robustInequality.getConstant());
 					}
 				}
-			} catch (GRBException e) {
-				e.printStackTrace();
-			} catch (IOException e) {
+			} catch (GRBException | IOException e) {
 				e.printStackTrace();
 			}
 		}
@@ -316,9 +353,9 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 		/**
 		 * Returns only violated robust inequalities
 		 */
-		default Collection<RobustInequality> getViolatedRobustInequalities(double[] xValues, double[] pValues, double zValue, double violationThreshold) throws GRBException, IOException{
-			Collection<RobustInequality> robustInequalities = this.computeRobustInequalities(xValues, pValues, zValue);
-			robustInequalities.removeIf(recycledInequality -> recycledInequality.computeViolation(xValues, pValues, zValue) <= violationThreshold);
+		default Collection<RobustInequality> getViolatedRobustInequalities(double[] xValues, double[] pPrimeValues, double zValue, double violationThreshold) throws GRBException, IOException{
+			Collection<RobustInequality> robustInequalities = this.computeRobustInequalities(xValues, pPrimeValues, zValue);
+			robustInequalities.removeIf(recycledInequality -> recycledInequality.computeViolation(xValues, pPrimeValues, zValue) <= violationThreshold);
 			return robustInequalities;
 		}
 		
@@ -326,11 +363,11 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 		 * Computes robust inequalities according to the separation strategy.
 		 * @throws IOException 
 		 */
-		abstract Collection<RobustInequality> computeRobustInequalities(double[] xValues, double[] pValues, double zValue) throws GRBException, IOException;
+		abstract Collection<RobustInequality> computeRobustInequalities(double[] xValues, double[] pPrimeValues, double zValue) throws GRBException, IOException;
 	}
 	
 	/**
-	 * Preprocesses recyclable inequalities and provides their optimal sub-inequalities during separation.
+	 * Receives preprocessed recyclable inequalities and provides their optimal sub-inequalities during separation.
 	 */
 	private class RecyclableSeparator implements Separator {
 		/**
@@ -343,10 +380,10 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 		}
 
 		@Override
-		public List<RobustInequality> computeRobustInequalities(double[] xValues, double[] pValues, double zValue) {
+		public List<RobustInequality> computeRobustInequalities(double[] xValues, double[] pPrimeValues, double zValue) {
 			List<RobustInequality> robustInequalities = new ArrayList<RobustInequality>();
-			for (RecyclableInequality recycledInequality : recyclableInequalities) {
-				robustInequalities.add(recycledInequality.getRecycledInequality(xValues, pValues));
+			for (RecyclableInequality recyclableInequality : recyclableInequalities) {
+				robustInequalities.add(recyclableInequality.getRecycledInequality(xValues, pPrimeValues));
 			}
 			return robustInequalities;
 		}
@@ -362,10 +399,9 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 		private Map<Variable, Set<Variable>> uncertainVariableToConflictingNeighborhood;
 		
 		/**
-		 * Constructor computing the neighborhoods
+		 * Constructor obtaining a conflict graph and computing the neighborhoods.
 		 */
-		public CliqueSeparator() throws GRBException, IOException {
-			ConflictGraph conflictGraph = new ConflictGraph(robustProblem.getModel(), robustProblem.getUncertainModelVariables(), algorithmParameters);
+		public CliqueSeparator(ConflictGraph conflictGraph) throws GRBException, IOException {
 			uncertainVariableToConflictingNeighborhood = new HashMap<Variable, Set<Variable>>();
 			for (GRBVar uncertainModelVariable : robustProblem.getUncertainModelVariables()) {
 				Set<Variable> neighborhood = new HashSet<Variable>();
@@ -377,9 +413,9 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 		}
 				
 		@Override
-		public Set<RobustInequality> computeRobustInequalities(double[] xValues, double[] pValues, double zValue) {
+		public Set<RobustInequality> computeRobustInequalities(double[] xValues, double[] pPrimeValues, double zValue) {
 			//Assigns each variable its impact on the violation in the recycled inequality.
-			Function<Variable, Double> violationImpactFunc = variable -> xValues[variable.getNominalIndex()]*variable.getDeviation()/scalingQuotient - pValues[variable.getUncertainIndex()];
+			Function<Variable, Double> violationImpactFunc = variable -> xValues[variable.getNominalIndex()]*Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient - pPrimeValues[variable.getUncertainIndex()];
 			//The clique inequalities to be recycled
 			Set<RobustInequality> cliqueInequalities = new HashSet<RobustInequality>();
 			//Set of already considered cliques to avoid duplicate recycling
@@ -398,7 +434,7 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 					RobustInequality recycledCliqueInequality =  new RobustInequality();
 					recycledCliqueInequality.zCoeff = 1;
 					for (Variable variable : clique) {
-						recycledCliqueInequality.addVariable(variable, variable.getDeviation()/scalingQuotient, 1);
+						recycledCliqueInequality.addVariable(variable, Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient, 1);
 					}
 					cliqueInequalities.add(recycledCliqueInequality);
 					cliques.add(clique);
@@ -585,9 +621,9 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 		 * If this is not successful, solves the separation LP.
 		 */
 		@Override
-		public Collection<RobustInequality> computeRobustInequalities(double[] xValues, double[] pValues, double zValue) throws GRBException, IOException {
+		public Collection<RobustInequality> computeRobustInequalities(double[] xValues, double[] pPrimeValues, double zValue) throws GRBException, IOException {
 			//Tries to separate using recyclable inequalities
-			Collection<RobustInequality> recycledInequalities = recyclableSeparator.getViolatedRobustInequalities(xValues, pValues, zValue, algorithmParameters.getFeasibilityTolerance());
+			Collection<RobustInequality> recycledInequalities = recyclableSeparator.getViolatedRobustInequalities(xValues, pPrimeValues, zValue, algorithmParameters.getFeasibilityTolerance());
 			//Only proceeds if none are violated
 			if (!recycledInequalities.isEmpty()) {
 				return recycledInequalities;
@@ -596,7 +632,7 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 			//Sets the objective function to be the violation of the recycled constraint
 			GRBLinExpr objExpr = new GRBLinExpr();
 			for (Variable variable : robustProblem.getUncertainVariables()) {
-				objExpr.addTerm(xValues[variable.getNominalIndex()]*variable.getDeviation()/scalingQuotient-pValues[variable.getUncertainIndex()], pi[variable.getUncertainIndex()]);
+				objExpr.addTerm(xValues[variable.getNominalIndex()]*Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient-pPrimeValues[variable.getUncertainIndex()], pi[variable.getUncertainIndex()]);
 			}
 			objExpr.addTerm(-zValue, piZero);
 			sepModel.setObjective(objExpr, GRB.MAXIMIZE);
@@ -816,21 +852,22 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 						if (nominalConstr.getCoefficient(i)*sign > 0) {
 							numPosVars++;
 						}
-					}
-					if (numPosVars >= 2) {
-						liftableConstrs.add(new LiftableConstr(nominalConstr, sign));
+						if (numPosVars >= 2) {
+							liftableConstrs.add(new LiftableConstr(nominalConstr, sign));
+							break;
+						}
 					}
 				}
 			}
 		}
 		
 		@Override
-		public Collection<RobustInequality> computeRobustInequalities(double[] xValues, double[] pValues, double zValue) throws GRBException, IOException {
+		public Collection<RobustInequality> computeRobustInequalities(double[] xValues, double[] pPrimeValues, double zValue) throws GRBException, IOException {
 			List<RobustInequality> robustInequalities = new ArrayList<RobustInequality>();
 			for (LiftableConstr liftableConstr : liftableConstrs) {
 				//Only lifts if the violation before lifting is positive
-				if (liftableConstr.computePreLiftingViolation(xValues, pValues, zValue) > algorithmParameters.getFeasibilityTolerance()) {
-					robustInequalities.add(liftableConstr.computeRobustInequality(xValues, pValues, zValue));
+				if (liftableConstr.computePreLiftingViolation(xValues, pPrimeValues, zValue) > algorithmParameters.getFeasibilityTolerance()) {
+					robustInequalities.add(liftableConstr.computeRobustInequality(xValues, pPrimeValues, zValue));
 				}
 			}
 			return robustInequalities;
@@ -880,7 +917,7 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 						negativeVarPairs.add(new VariableIndexPair(variable, i));
 					}
 				}
-				//Sorts non-increasing
+				//Sorts non-increasing w.r.t. deviation
 				positiveUncertainVarPairs.sort((var1, var2) -> Double.compare(var2.getVariable().getDeviation(), var1.getVariable().getDeviation()));
 			}
 
@@ -900,12 +937,12 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 			/**
 			 * Computes the violation of the (potentially invalid) recycled inequality before lifting.
 			 */
-			double computePreLiftingViolation(double[] xValues, double[] pValues, double zValue) throws GRBException {
+			double computePreLiftingViolation(double[] xValues, double[] pPrimeValues, double zValue) throws GRBException {
 				double violation = -this.getRHS() * zValue;
 				for (VariableIndexPair positiveVarPair : positiveUncertainVarPairs) {
 					Variable variable = positiveVarPair.getVariable();
 					double coeff = this.getCoefficient(positiveVarPair.getIndex());
-					double impact = coeff*(variable.getDeviation()/scalingQuotient*xValues[variable.getNominalIndex()] - coeff*pValues[variable.getUncertainIndex()]);
+					double impact = coeff*(Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient*xValues[variable.getNominalIndex()] - pPrimeValues[variable.getUncertainIndex()]);
 					if (impact > 0) {
 						violation += impact;
 					}
@@ -916,13 +953,13 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 			/**
 			 * Decides which variables to lift and computes their lifting coefficients.
 			 */
-			RobustInequality computeRobustInequality(double[] xValues, double[] pValues, double zValue) throws GRBException, IOException {
+			RobustInequality computeRobustInequality(double[] xValues, double[] pPrimeValues, double zValue) throws GRBException, IOException {
 				//List of variables with positive coeff and positive impact on the violation that will be part of the recycled inequality 
 				List<VariableIndexPair> chosenPositiveVarPairs = new ArrayList<VariableIndexPair>(positiveUncertainVarPairs.size());
 				for (VariableIndexPair positiveVarPair : positiveUncertainVarPairs) {
 					Variable variable = positiveVarPair.getVariable();
 					double coeff = this.getCoefficient(positiveVarPair.getIndex());
-					double impact = coeff*(variable.getDeviation()/scalingQuotient*xValues[variable.getNominalIndex()] - coeff*pValues[variable.getUncertainIndex()]);
+					double impact = coeff*(Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient*xValues[variable.getNominalIndex()] - pPrimeValues[variable.getUncertainIndex()]);
 					if (impact >= 0) {
 						chosenPositiveVarPairs.add(positiveVarPair);
 					}
@@ -931,7 +968,7 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 				for (VariableIndexPair positiveVarPair : chosenPositiveVarPairs) {
 					Variable variable = positiveVarPair.getVariable();
 					double coeff = this.getCoefficient(positiveVarPair.getIndex());
-					robustInequality.addVariable(variable, coeff*variable.getDeviation()/scalingQuotient, coeff);
+					robustInequality.addVariable(variable, coeff*Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient, coeff);
 				}
 				
 				//Right-hand side that also contains terms of possible estimated variables with negative coeff
@@ -943,8 +980,8 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 					//Initialized to be all such variables
 					List<VariableIndexPair> liftingPairs = new ArrayList<VariableIndexPair>(negativeVarPairs);
 					
-					//Sorts the negative vars non-decreasing w.r.t. their solution value
-					liftingPairs.sort((pair1, pair2) -> Double.compare(xValues[pair1.getVariable().getNominalIndex()], xValues[pair2.getVariable().getNominalIndex()]));
+					//Sorts the negative coeff vars non-increasing w.r.t. their solution value
+					liftingPairs.sort((pair1, pair2) -> Double.compare(xValues[pair2.getVariable().getNominalIndex()], xValues[pair1.getVariable().getNominalIndex()]));
 					
 					//While the rhs is negative, we estimate the variables with the highest solution values
 					while (rhs < 0) {
@@ -960,39 +997,34 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 					//Last index of variable that completely fits into the knapsack
 					int indexLastFitRHS = (int) knapsackSolution[2];
 										
-					//Sum of (lifting coefficients * solution values) for all lifted variables 
+					//Sum of (lifting coefficients * solution values) for all lifted variables
 					double liftedTermsSum = 0;
-					boolean updateLiftedTermsSum = true;
+					for (VariableIndexPair liftingPair2 : liftingPairs) {
+						double increasedCapacity = rhs - this.getCoefficient(liftingPair2.getIndex());
+						double knapsackValueIncreasedCapacity = solveFractionalKnapsack(chosenPositiveVarPairs, increasedCapacity, knapsackValueRHS, weightSumLastFitRHS, indexLastFitRHS)[0];
+						
+						double liftingCoeff = knapsackValueRHS - knapsackValueIncreasedCapacity;
+						liftedTermsSum += liftingCoeff*xValues[liftingPair2.getVariable().getNominalIndex()];
+					}
 					
 					//Checks for all lifting variables whether they should better not be lifted
-					for (int l = liftingPairs.size()-1; l >= 0; l--) {
+					for (int l = 0; l < liftingPairs.size(); l++) {
 						VariableIndexPair liftingPair = liftingPairs.get(l);
+						//All variables that are (nearly) zero will be lifted anyway
 						if (xValues[liftingPair.getVariable().getNominalIndex()] < algorithmParameters.getIntegerFeasibilityTolerance()) {
 							break;
 						}
 						
-						//Updates liftedTermsSum if necessary
-						if (updateLiftedTermsSum) {
-							liftedTermsSum = 0;
-							for (VariableIndexPair liftingPair2 : liftingPairs) {
-								double increasedCapacity = rhs - this.getCoefficient(liftingPair2.getIndex());
-								double knapsackValueIncreasedCapacity = solveFractionalKnapsack(chosenPositiveVarPairs, increasedCapacity, knapsackValueRHS, weightSumLastFitRHS, indexLastFitRHS)[0];
-								
-								double liftingCoeff = knapsackValueRHS - knapsackValueIncreasedCapacity;
-								liftedTermsSum += liftingCoeff*xValues[liftingPair2.getVariable().getNominalIndex()];
-							}
-							updateLiftedTermsSum = false;
-						}
-						
 						//New rhs if the variable is estimated
 						double estimatedRHS = rhs - this.getCoefficient(liftingPair.getIndex());
+						//Knapsack solution for the estimated rhs 
 						knapsackSolution = solveFractionalKnapsack(chosenPositiveVarPairs, estimatedRHS, knapsackValueRHS, weightSumLastFitRHS, indexLastFitRHS);
 						double knapsackValueEstimatedRHS = knapsackSolution[0];
 						double weightSumLastFitEstimatedRHS = knapsackSolution[1];
 						int indexLastFitEstimatedRHS = (int) knapsackSolution[2];
 						
-						//Value if the variable is estimated instead of lifted
-						double valueEstimation = zValue*this.getCoefficient(liftingPair.getIndex());
+						//Sum of (lifting coefficients * solution values) for all lifted variables if the current variable is estimated
+						double liftedTermsSumEstimatedRHS = 0;
 						for (VariableIndexPair liftingPair2 : liftingPairs) {
 							if (liftingPair2 == liftingPair) {
 								continue;
@@ -1001,17 +1033,18 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 							double knapsackValueIncreasedCapacity = solveFractionalKnapsack(chosenPositiveVarPairs, increasedCapacity, knapsackValueEstimatedRHS, weightSumLastFitEstimatedRHS, indexLastFitEstimatedRHS)[0];
 							
 							double liftingCoeff = knapsackValueEstimatedRHS - knapsackValueIncreasedCapacity;
-							valueEstimation += liftingCoeff*xValues[liftingPair2.getVariable().getNominalIndex()];
+							liftedTermsSumEstimatedRHS += liftingCoeff*xValues[liftingPair2.getVariable().getNominalIndex()];
 						}
 						
-						//We estimate and remove from the list of lifting vars if the estimation value is greater 
-						if (valueEstimation >= liftedTermsSum) {
+						//We estimate and remove from the list of lifting vars if this raises the violation
+						if (zValue*this.getCoefficient(liftingPair.getIndex()) + liftedTermsSumEstimatedRHS >= liftedTermsSum) {
 							rhs = estimatedRHS;
 							knapsackValueRHS = knapsackValueEstimatedRHS;
 							weightSumLastFitRHS = weightSumLastFitEstimatedRHS;
 							indexLastFitRHS = indexLastFitEstimatedRHS;
-							updateLiftedTermsSum = true;
+							liftedTermsSum = liftedTermsSumEstimatedRHS;
 							liftingPairs.remove(l);
+							l--;
 						}
 					}
 					
@@ -1028,7 +1061,7 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 				}
 				robustInequality.zCoeff = rhs;
 				if (lifted) {
-					double violation =  robustInequality.computeViolation(xValues, pValues, zValue);
+					double violation =  robustInequality.computeViolation(xValues, pPrimeValues, zValue);
 					if (violation > algorithmParameters.getFeasibilityTolerance()) {
 						writeOutput("##### Lifted constraint with violation "+violation);						
 					}
@@ -1048,11 +1081,11 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 					double coeff = this.getCoefficient(knapsackVars.get(currentIndexLastFit+1).getIndex());
 					if (currentWeightSum + coeff <= capacity) {
 						currentWeightSum += coeff;
-						currentValue += coeff*variable.getDeviation()/scalingQuotient;
+						currentValue += coeff*Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient;
 						currentIndexLastFit++;
 					}
 					else {
-						currentValue += (capacity - currentWeightSum)*variable.getDeviation()/scalingQuotient;
+						currentValue += (capacity - currentWeightSum)*Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient;
 						break;
 					}
 				}
@@ -1088,8 +1121,8 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 	 * That is, the sum of the left-hand side coefficients of the original inequality exceeds the right-hand side value.
 	 * Otherwise, the corresponding recycled inequality is dominated by the robustness constraints x*deviation <= p+z. 
 	 */
-	private List<RecyclableInequality> computeRecyclableInequalities() throws GRBException {
-		List<RecyclableInequality> preparedRecycledInequalities = new ArrayList<RecyclableInequality>();
+	private List<RecyclableInequality> computeRecyclableConstraints() throws GRBException {
+		List<RecyclableInequality> recyclableConstraints = new ArrayList<RecyclableInequality>();
 		
 		//Iterates over all nominal constraints
 		for (NominalConstr constraint : nominalConstrs) {
@@ -1109,9 +1142,9 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 				//Adapts the constraint such that we have ax<=b or -ax<=-b 
 				double rhs = sign*constraint.getRHS();
 				
-				//Indices of the variables in the recycled inequality.
+				//Variables in the recyclable inequality.
 				List<Variable> recVariables = new ArrayList<Variable>();
-				//Coefficients of the variables in the recycled inequality.
+				//Coefficients of the variables in the recyclable inequality.
 				List<Double> recCoeffs = new ArrayList<Double>();
 				
 				//The recycled inequality is only useful if the sum over all xCoeffs is greater than rhs.
@@ -1125,7 +1158,7 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 					Variable variable = constraint.getNominalVariable(i);
 					double coeff = sign*constraint.getCoefficient(i);
 					if (coeff > 0){
-						//If the variable is uncertain and the coefficient is positive, it can be added to the recycled inequality.
+						//If the variable is uncertain and the coefficient is positive, it can be added to the recyclable inequality.
 						if (variable.getDeviation() > 0) {
 							recVariables.add(variable);
 							recCoeffs.add(coeff);
@@ -1145,48 +1178,49 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 				}
 				//The recycled inequality is only useful if the sum over all xCoeffs is greater than rhs.
 				if (coeffSum > rhs) {
-					preparedRecycledInequalities.add(new RecyclableInequality(recVariables, recCoeffs, rhs));
+					recyclableConstraints.add(new RecyclableInequality(recVariables, recCoeffs, rhs));
 				}
 			}
 		}
-		return preparedRecycledInequalities;
+		return recyclableConstraints;
 	}
 	
 	/**
-	 * Models robust inequalities of the form
-	 * zCoeff*z + sum(pCoeff*p) - sum(xCoeff*x) >= constant 
+	 * Models robust inequalities of the form: zCoeff*z + sum(pCoeff*p) - sum(xCoeff*x) >= constant
+	 * The variables list contains the variables for which the corresponding p
+	 *  or the variable itself is part of the inequality. Note that not both have to be contained.
 	 */
 	private class RobustInequality {
-		List<Variable> variables = new ArrayList<Variable>();
-		List<Double> xCoeffs = new ArrayList<Double>();
-		List<Double> pCoeffs = new ArrayList<Double>();
-		double zCoeff;
-		double constant;
+		private List<Variable> variables = new ArrayList<Variable>();
+		private List<Double> xCoeffs = new ArrayList<Double>();
+		private List<Double> pPrimeCoeffs = new ArrayList<Double>();
+		private double zCoeff;
+		private double constant;
 
-		public List<Variable> getVariables() {
+		List<Variable> getVariables() {
 			return variables;
 		}
 
-		public List<Double> getXCoeffs() {
+		List<Double> getXCoeffs() {
 			return xCoeffs;
 		}
 
-		public List<Double> getPCoeffs() {
-			return pCoeffs;
+		List<Double> getPprimeCoeffs() {
+			return pPrimeCoeffs;
 		}
 
-		public double getZCoeff() {
+		double getZCoeff() {
 			return zCoeff;
 		}
 
-		public double getConstant() {
+		double getConstant() {
 			return constant;
 		}
 		
-		void addVariable(Variable variable, double xCoeff, double pCoeff) {
+		void addVariable(Variable variable, double xCoeff, double pPrimeCoeff) {
 			variables.add(variable);
 			xCoeffs.add(xCoeff);
-			pCoeffs.add(pCoeff);
+			pPrimeCoeffs.add(pPrimeCoeff);
 		}
 		
 		/**
@@ -1198,7 +1232,7 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 			for (int i = 0; i < getVariables().size(); i++) {
 				Variable variable = getVariables().get(i);
 				if (variable.getDeviation() > 0) {
-					lhsExpr.addTerm(getPCoeffs().get(i), p[variable.getUncertainIndex()]);
+					lhsExpr.addTerm(getPprimeCoeffs().get(i), pPrime[variable.getUncertainIndex()]);
 				}
 				lhsExpr.addTerm(-getXCoeffs().get(i), variable.getModelVariable());
 			}
@@ -1208,13 +1242,13 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 		/**
 		 * Computes the violation of the recycled inequality.
 		 */
-		double computeViolation(double[] xValues, double[] pValues, double zValue) {
+		double computeViolation(double[] xValues, double[] pPrimeValues, double zValue) {
 			double violation = constant - zCoeff * zValue;
 			for (int i = 0; i < variables.size(); i++) {
 				Variable variable = variables.get(i);
 				violation += xCoeffs.get(i)*xValues[variable.getNominalIndex()];
 				if (variable.getDeviation() > 0) {
-					violation -= pCoeffs.get(i)*pValues[variable.getUncertainIndex()];
+					violation -= pPrimeCoeffs.get(i)*pPrimeValues[variable.getUncertainIndex()];
 				}
 			}
 			return violation;
@@ -1232,9 +1266,9 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
  	 * obtained by dropping some x, that maximizes the violation for given solutions x,p.
 	 */
 	private class RecyclableInequality{
-		List<Variable> variables;
-		List<Double> coeffs;
-		double rhs;
+		private List<Variable> variables;
+		private List<Double> coeffs;
+		private double rhs;
 
 		/**
 		 * Constructor directly obtaining variables, coefficients and rhs
@@ -1249,13 +1283,13 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 		 * Computes the corresponding recycled (sub-)inequality, obtained by dropping some x,
 		 * that maximizes the violation for given solutions x,p.
 		 */
-		RobustInequality getRecycledInequality(double[] xValues, double[] pValues) {
+		RobustInequality getRecycledInequality(double[] xValues, double[] pPrimeValues) {
 			RobustInequality robustInequality = new RobustInequality();
 			robustInequality.zCoeff = rhs;
 			for (int i = 0; i < variables.size(); i++) {
 				Variable variable = variables.get(i);
-				if (coeffs.get(i)*pValues[variable.getUncertainIndex()] <= coeffs.get(i)*variable.getDeviation()/scalingQuotient*xValues[variable.getNominalIndex()]) {
-					robustInequality.addVariable(variable, coeffs.get(i)*variable.getDeviation()/scalingQuotient, coeffs.get(i));
+				if (coeffs.get(i)*pPrimeValues[variable.getUncertainIndex()] <= coeffs.get(i)*Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient*xValues[variable.getNominalIndex()]) {
+					robustInequality.addVariable(variable, coeffs.get(i)*Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient, coeffs.get(i));
 				}
 			}
 			return robustInequality;
@@ -1269,7 +1303,7 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 			robustInequality.zCoeff = rhs;
 			for (int i = 0; i < variables.size(); i++) {
 				Variable variable = variables.get(i);
-				robustInequality.addVariable(variable, coeffs.get(i)*variable.getDeviation()/scalingQuotient, coeffs.get(i));
+				robustInequality.addVariable(variable, coeffs.get(i)*Math.min(variable.getDeviation(), highestPossibleZ)/scalingQuotient, coeffs.get(i));
 			}
 			return robustInequality;
 		}
@@ -1312,7 +1346,7 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 	/**
 	 * Specifies separation and Gurobi cuts strategies;
 	 */
-	public static class RecyclingStrategies extends AlgStrategies {
+	public static class RecyclingStrategies extends RobustAlgorithmStrategies {
 		/**
 		 * Enum type specifying whether we solve the integer program or the relaxation.
 		 */
@@ -1369,6 +1403,7 @@ public class AlgRecycleInequalitiesGurobi extends AbstractAlgorithm implements R
 		
 		@Override
 		void setDefaultStrategies() {
+			super.setDefaultStrategies();
 			relaxation = Relaxation.SOLVE_INTEGER;
 			directRecyclingStrategy = DirectRecyclingStrategy.DIRRECYCLE_NONE;
 			separationStrategy = SeparationRecyclingStrategy.SEPRECYCLE_CONSTRAINTS;

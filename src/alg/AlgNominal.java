@@ -31,13 +31,16 @@ public class AlgNominal extends AbstractAlgorithm{
 	@Override
 	protected void executeAlgorithm() throws IOException, GRBException {
 		problem.solve(getRemainingTime());
-		primalBound = problem.getPrimalBound();
-		dualBound = problem.getDualBound();
+		setPrimalBound(problem.getPrimalBound());
+		setDualBound(problem.getDualBound());
 		
-		//Stores best solution found
-		solution = new LinkedHashMap<Variable, Double>(problem.getNominalVariables().length);
-		for (int i = 0; i < problem.getNominalVariables().length; i++) {
-			solution.put(problem.getNominalVariables()[i], problem.getNominalVariablesSolutionValues()[i]);
+		//Stores best solution found, if available
+		if (problem.getNominalVariablesSolutionValues() != null) {
+			solution = new LinkedHashMap<Variable, Double>(problem.getNominalVariables().length);
+			for (int i = 0; i < problem.getNominalVariables().length; i++) {
+				solution.put(problem.getNominalVariables()[i], problem.getNominalVariablesSolutionValues()[i]);
+			}
 		}
+
 	}
 }

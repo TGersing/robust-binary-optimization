@@ -31,7 +31,7 @@ public class Variable implements Comparable<Variable>{
 	private int nominalIndex;
 
 	/**
-	 * Index in the list of uncertain variables.
+	 * Index in the list of uncertain variables. Is null if the variable is not uncertain.
 	 */
 	private Integer uncertainIndex;
 

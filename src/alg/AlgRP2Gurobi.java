@@ -50,13 +50,15 @@ public class AlgRP2Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 		reformulateModel();
 		
 		robustProblem.solve(getRemainingTime());
-		primalBound = robustProblem.getPrimalBound();
-		dualBound = robustProblem.getDualBound();
+		setPrimalBound(robustProblem.getPrimalBound());
+		setDualBound(robustProblem.getDualBound());
 		
-		//Stores best solution found
-		solution = new LinkedHashMap<Variable, Double>(robustProblem.getNominalVariables().length);
-		for (int i = 0; i < robustProblem.getNominalVariables().length; i++) {
-			solution.put(robustProblem.getNominalVariables()[i], robustProblem.getNominalVariablesSolutionValues()[i]);
+		//Stores best solution found, if available
+		if (robustProblem.getNominalVariablesSolutionValues() != null) {
+			solution = new LinkedHashMap<Variable, Double>(robustProblem.getNominalVariables().length);
+			for (int i = 0; i < robustProblem.getNominalVariables().length; i++) {
+				solution.put(robustProblem.getNominalVariables()[i], robustProblem.getNominalVariablesSolutionValues()[i]);
+			}
 		}
 	}
 
@@ -114,7 +116,8 @@ public class AlgRP2Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 		protected void callback() {
 			if (where == GRB.CB_MIP) {
 				try {
-					primalDualIntegral.update(getDoubleInfo(GRB.CB_MIP_OBJBST), getDoubleInfo(GRB.CB_MIP_OBJBND), false);
+					setPrimalBound(getDoubleInfo(GRB.CB_MIP_OBJBST));
+					setDualBound(getDoubleInfo(GRB.CB_MIP_OBJBND));
 				} catch (GRBException e) {}
 			}
 

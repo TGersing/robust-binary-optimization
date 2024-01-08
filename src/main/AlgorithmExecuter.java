@@ -1,15 +1,22 @@
 package main;
 
-import java.io.BufferedReader;
+import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JFileChooser;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
+import javax.swing.JTextField;
 
 import alg.AlgBranchAndBound;
 import alg.AbstractAlgorithm;
@@ -27,6 +34,7 @@ import alg.AlgRP4Gurobi;
 import alg.AlgRecycleInequalitiesGurobi;
 import alg.AlgRecycleInequalitiesGurobi.RecyclingStrategies;
 import alg.AlgReformulationGurobi;
+import alg.AlgSubmodularCuts;
 import alg.RobustAlgorithm.RobustAlgorithmStrategies;
 import gurobi.GRB;
 import gurobi.GRBException;
@@ -45,8 +53,8 @@ public class AlgorithmExecuter {
 		String problemPath;
 		String robustPath;
 		//Algorithm to be used. Can be one of the following:
-		//bnb, dnc, rec, ref, cut, bss, rp1, rp2, rp3, rp4
-		String algorithmName;
+		//bnb, dnc, rec, ref, sub, cut, bss, rp1, rp2, rp3, rp4
+		String algorithmName = null;
 		
 		//Optionally also receives "timelimit=*", "logpath=*.txt", "solutionpath=*.txt"
 		Optional<Integer> timeLimit = Optional.empty();
@@ -81,6 +89,10 @@ public class AlgorithmExecuter {
 						algorithmParameters.setLogPath(Optional.of(value));
 						argIterator.remove();
 					}
+					else if (key.toLowerCase().equals("numberthreads")) {
+						algorithmParameters.setNumberThreads(Optional.of(Integer.parseInt(value)));
+						argIterator.remove();
+					}
 					else if (key.toLowerCase().equals("resultspath")) {
 						resultsPath = Optional.of(value);
 						argIterator.remove();
@@ -94,36 +106,113 @@ public class AlgorithmExecuter {
 		}
 		//Reads from console if no arguments are given
 		else {
-			BufferedReader consoleReader = new BufferedReader(new InputStreamReader(System.in));
-			System.out.println("State the path to the nominal problem:");
-			problemPath = consoleReader.readLine();
-			System.out.println("State the path to the robustness components:");
-			robustPath = consoleReader.readLine();
-			System.out.println("State the algorithm to be used (bnb, dnc, rec, ref, cut, bss, rp1, rp2, rp3, rp4):");
-			algorithmName = consoleReader.readLine();
+			JFileChooser fileChooser = new JFileChooser();
+			File workingDirectory = new File(System.getProperty("user.dir"));
+			fileChooser.setCurrentDirectory(workingDirectory);
 			
-			System.out.println("State the time limit (leave blank for no time limit):");
-			String input = consoleReader.readLine();
-			if (!input.equals("")) {
-				timeLimit = Optional.of(Integer.parseInt(input));
+			int result = fileChooser.showDialog(null, "Select the file stating the nominal problem");
+			if (result == JFileChooser.APPROVE_OPTION) {
+			    File selectedFile = fileChooser.getSelectedFile();
+			    System.out.println("Selected file: " + selectedFile.getAbsolutePath());
+				problemPath = selectedFile.getAbsolutePath();
+			}
+			else {
+				return;
+			}
+
+			result = fileChooser.showDialog(null, "Select the file stating the robustness components");
+			if (result == JFileChooser.APPROVE_OPTION) {
+			    File selectedFile = fileChooser.getSelectedFile();
+			    System.out.println("Selected file: " + selectedFile.getAbsolutePath());
+			    robustPath = selectedFile.getAbsolutePath();
+			}
+			else {
+				return;
 			}
 			
-			System.out.println("State the destination for the log file (leave blank for no log file):");
-			input = consoleReader.readLine();
-			if (!input.equals("")) {
-				algorithmParameters.setLogPath(Optional.of(input));
+	        String response = (String) JOptionPane.showInputDialog(null,
+		            "Choose One", "Select Algorithm",
+		            JOptionPane.QUESTION_MESSAGE, null,
+		            new String[] {"Branch and Bound", "Divide and Conquer", "Recycling", "Standard Reformulation", "Submodular Cuts", "Scenario Separation", "Bertsimas Sim Sequence", "Atamturk RP1", "Atamturk RP2", "Atamturk RP3", "Atamturk RP4"},
+		            "Branch and Bound");
+			switch (response) {
+				case "Branch and Bound":
+					algorithmName = "bnb";
+					break;
+				case "Divide and Conquer":
+					algorithmName = "dnc";
+					break;
+				case "Recycling":
+					algorithmName = "rec";
+					break;
+				case "Standard Reformulation":
+					algorithmName = "ref";
+					break;
+				case "Submodular Cuts":
+					algorithmName = "sub";
+					break;
+				case "Scenario Separation":
+					algorithmName = "cut";
+					break;
+				case "Bertsimas Sim Sequence":
+					algorithmName = "bss";
+					break;
+				case "Atamturk RP1":
+					algorithmName = "rp1";
+					break;
+				case "Atamturk RP2":
+					algorithmName = "rp2";
+					break;
+				case "Atamturk RP3":
+					algorithmName = "rp3";
+					break;
+				case "Atamturk RP4":
+					algorithmName = "rp4";
+					break;
 			}
 			
-			System.out.println("State the destination for the results file (leave blank for no results file):");
-			input = consoleReader.readLine();
-			if (!input.equals("")) {
-				resultsPath = Optional.of(input);
+			JPanel parameterPanel = new JPanel();
+			parameterPanel.setLayout(new BoxLayout(parameterPanel, BoxLayout.Y_AXIS));
+			
+			JTextField timeLimitField = new JTextField();
+			parameterPanel.add(new JLabel("State the time limit in seconds (leave blank for no limit)"));
+			parameterPanel.add(timeLimitField);
+			parameterPanel.add(Box.createVerticalStrut(20));
+			
+			JTextField threadsField = new JTextField();
+			parameterPanel.add(new JLabel("State the thread limit (leave blank for no limit)"));
+			parameterPanel.add(threadsField);
+			parameterPanel.add(Box.createVerticalStrut(20));
+
+			result = JOptionPane.showConfirmDialog(null, parameterPanel, "Enter Algorithm Parameters", JOptionPane.DEFAULT_OPTION);
+			if (result == JOptionPane.OK_OPTION) {
+				if (!timeLimitField.getText().equals("")) {
+					timeLimit = Optional.of(Integer.parseInt(timeLimitField.getText()));
+				}
+				if (!threadsField.getText().equals("")) {
+					algorithmParameters.setNumberThreads(Optional.of(Integer.parseInt(threadsField.getText())));
+				}
 			}
 			
-			System.out.println("State the destination for the solution file (leave blank for no solution file):");
-			input = consoleReader.readLine();
-			if (!input.equals("")) {
-				solutionPath = Optional.of(input);
+			result = fileChooser.showDialog(null, "Select the destination for the log file (cancel for no log file)");
+			if (result == JFileChooser.APPROVE_OPTION) {
+			    File selectedFile = fileChooser.getSelectedFile();
+			    System.out.println("Selected file: " + selectedFile.getAbsolutePath());
+			    algorithmParameters.setLogPath(Optional.of(selectedFile.getAbsolutePath()));
+			}
+			
+			result = fileChooser.showDialog(null, "Select the destination for the results file (cancel for no results file)");
+			if (result == JFileChooser.APPROVE_OPTION) {
+			    File selectedFile = fileChooser.getSelectedFile();
+			    System.out.println("Selected file: " + selectedFile.getAbsolutePath());
+			    resultsPath = Optional.of(selectedFile.getAbsolutePath());
+			}
+			
+			result = fileChooser.showDialog(null, "Select the destination for the solution file (cancel for no solution file)");
+			if (result == JFileChooser.APPROVE_OPTION) {
+			    File selectedFile = fileChooser.getSelectedFile();
+			    System.out.println("Selected file: " + selectedFile.getAbsolutePath());
+			    solutionPath = Optional.of(selectedFile.getAbsolutePath());
 			}
 		}
 		
@@ -141,7 +230,19 @@ public class AlgorithmExecuter {
 					+ ";Primal Dual Integral"
 					+ ";Relative Gap"
 					+ ";Optimal"
-					+ ";Elapsed Time\n";
+					+ ";Elapsed Time";
+			if (algorithmName.toLowerCase().equals("bnb")) {
+				resultsOutput += ";Number Uncertain Variables"
+						+ ";Number Cliques"
+						+ ";Number Possible Z"
+						+ ";Number Integer Subproblems Started"
+						+ ";Time in Integer Subproblems"
+						+ ";Primal Bound after First Integer Subproblem"
+						+ ";Gap Primal Bound and First Solution"
+						+ ";Number LP Started"
+						+ ";Time in LP";
+			}
+			resultsOutput+="\n";
 			
 			resultsOutput += problemPath.split("/")[problemPath.split("/").length-1];
 			resultsOutput += ";"+robustPath.split("/")[robustPath.split("/").length-1];
@@ -161,77 +262,109 @@ public class AlgorithmExecuter {
 		}
 
 		
-		//Initializes the chosen algorithm
-		AbstractAlgorithm algo = null;
-		if (args.length == 0) {
-			argList = null;
-		}
-		switch (algorithmName.toLowerCase()) {
-			case "bnb":
-				algo = new AlgBranchAndBound(problemPath, robustPath, algorithmParameters, new BnBStrategies(argList, algorithmParameters));
-				break;
-			case "dnc":
-				algo = new AlgDivideAndConquer(problemPath, robustPath, algorithmParameters, new DnCStrategies(argList, algorithmParameters));
-				break;
-			case "rec":
-				algo = new AlgRecycleInequalitiesGurobi(problemPath, robustPath, algorithmParameters, new RecyclingStrategies(argList, algorithmParameters));
-				break;
-			case "ref":
-				algo = new AlgReformulationGurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies(argList, algorithmParameters));
-				break;
-			case "cut":
-				algo = new AlgCuttingPlanesGurobi(problemPath, robustPath, algorithmParameters);
-				break;
-			case "bss":
-				algo = new AlgBertsimasSimSequence(problemPath, robustPath, algorithmParameters, new BSStrategies(argList, algorithmParameters));
-				break;
-			case "rp1":
-				algo = new AlgRP1Gurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies(argList, algorithmParameters));
-				break;
-			case "rp2":
-				algo = new AlgRP2Gurobi(problemPath, robustPath, algorithmParameters);
-				break;
-			case "rp3":
-				algo = new AlgRP3Gurobi(problemPath, robustPath, algorithmParameters);
-				break;
-			case "rp4":
-				algo = new AlgRP4Gurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies(argList, algorithmParameters));
-				break;
-			default:
-				throw new IllegalArgumentException("Unexpected value: " + algorithmName.toLowerCase());
-		}
-		
-		//Solves the problem using the chosen algorithm
-		algo.solve(timeLimit);
-		
-		//Writes solution file
-		if (solutionPath.isPresent()) {
-			//Obtains solution
-			Map<Variable, Double> solution = null;
-			solution = algo.getSolution();
-
-			//Clears solution file
-			new FileWriter(solutionPath.get(), false).close();
-			
-			//Writes solution
-			String output = "";
-			for (Variable var : solution.keySet()) {
-				output += var.getModelVariable().get(GRB.StringAttr.VarName) + "=" + solution.get(var)+"\n";
+		try {
+			//Initializes the chosen algorithm
+			AbstractAlgorithm algo = null;
+			if (args.length == 0) {
+				argList = null;
 			}
-			AbstractAlgorithm.writeOutput(output, solutionPath);
-		}
-		if (resultsPath.isPresent()) {
-			//Clears results file
-			FileWriter resultsWriter = new FileWriter(resultsPath.get(), false);
-			resultsWriter.write(resultsOutput);
+			switch (algorithmName.toLowerCase()) {
+				case "bnb":
+					algo = new AlgBranchAndBound(problemPath, robustPath, algorithmParameters, new BnBStrategies(argList, algorithmParameters));
+					break;
+				case "dnc":
+					algo = new AlgDivideAndConquer(problemPath, robustPath, algorithmParameters, new DnCStrategies(argList, algorithmParameters));
+					break;
+				case "rec":
+					algo = new AlgRecycleInequalitiesGurobi(problemPath, robustPath, algorithmParameters, new RecyclingStrategies(argList, algorithmParameters));
+					break;
+				case "ref":
+					algo = new AlgReformulationGurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies(argList, algorithmParameters));
+					break;
+				case "sub":
+					algo = new AlgSubmodularCuts(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies(argList, algorithmParameters));
+					break;
+				case "cut":
+					algo = new AlgCuttingPlanesGurobi(problemPath, robustPath, algorithmParameters);
+					break;
+				case "bss":
+					algo = new AlgBertsimasSimSequence(problemPath, robustPath, algorithmParameters, new BSStrategies(argList, algorithmParameters));
+					break;
+				case "rp1":
+					algo = new AlgRP1Gurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies(argList, algorithmParameters));
+					break;
+				case "rp2":
+					algo = new AlgRP2Gurobi(problemPath, robustPath, algorithmParameters);
+					break;
+				case "rp3":
+					algo = new AlgRP3Gurobi(problemPath, robustPath, algorithmParameters);
+					break;
+				case "rp4":
+					algo = new AlgRP4Gurobi(problemPath, robustPath, algorithmParameters, new RobustAlgorithmStrategies(argList, algorithmParameters));
+					break;
+				default:
+					throw new IllegalArgumentException("Unexpected value: " + algorithmName.toLowerCase());
+			}
 			
-			resultsWriter.write(";"+algo.getPrimalBound()
-					+ ";"+algo.getDualBound()
-					+ ";"+algo.getPrimalDualIntegral()
-					+ ";"+algo.getRelativeGap()
-					+ ";"+algo.isOptimal()
-					+ ";"+algo.getElapsedTime()+"\n");
-			resultsWriter.close();
+			//Solves the problem using the chosen algorithm
+			algo.solve(timeLimit);
+			
+			//Writes solution file
+			if (solutionPath.isPresent() && algo.getSolution() != null) {
+				//Obtains solution
+				Map<Variable, Double> solution = null;
+				solution = algo.getSolution();
+
+				//Clears solution file
+				new FileWriter(solutionPath.get(), false).close();
+				
+				//Writes solution
+				String output = "";
+				for (Variable var : solution.keySet()) {
+					output += var.getModelVariable().get(GRB.StringAttr.VarName) + "=" + solution.get(var)+"\n";
+				}
+				AbstractAlgorithm.writeOutput(output, solutionPath);
+			}
+			if (resultsPath.isPresent()) {
+				//Clears results file
+				FileWriter resultsWriter = new FileWriter(resultsPath.get(), false);
+				resultsWriter.write(resultsOutput);
+				
+				resultsWriter.write(";"+algo.getPrimalBound()
+						+ ";"+algo.getDualBound()
+						+ ";"+algo.getPrimalDualIntegral()
+						+ ";"+algo.getRelativeGap()
+						+ ";"+algo.isOptimal()
+						+ ";"+algo.getElapsedTime());
+				if (algo instanceof AlgBranchAndBound) {
+					AlgBranchAndBound bnbAlgorithm = (AlgBranchAndBound) algo;
+					resultsWriter.write(";"+bnbAlgorithm.getNumberUncertainVariables()
+							+ ";"+bnbAlgorithm.getNumberCliques()
+							+ ";"+bnbAlgorithm.getNumberPossibleZ()
+							+ ";"+bnbAlgorithm.getNumberIntegerStarted()
+							+ ";"+bnbAlgorithm.getTimeSpendInInteger()
+							+ ";"+bnbAlgorithm.getPrimalBoundAfterFirstInteger()
+							+ ";"+AbstractAlgorithm.getRelativeGap(bnbAlgorithm.getPrimalBoundAfterFirstInteger(), bnbAlgorithm.getPrimalBound())
+							+ ";"+bnbAlgorithm.getNumberLPStarted()
+							+ ";"+bnbAlgorithm.getTimeSpendInLP());
+				}
+				resultsWriter.write("\n");
+				resultsWriter.close();
+			}
+		} catch (Throwable e) {
+			AbstractAlgorithm.writeOutput(e.toString(), algorithmParameters);
+			
+			e.printStackTrace();
+			
+			if (resultsPath.isPresent()) {
+				//Clears results file
+				FileWriter resultsWriter = new FileWriter(resultsPath.get(), false);
+				resultsWriter.write(resultsOutput);
+				
+				resultsWriter.write(";"+e.toString());
+				resultsWriter.write("\n");
+				resultsWriter.close();
+			}
 		}
 	}
 }

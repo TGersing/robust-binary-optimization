@@ -29,13 +29,19 @@ public class CliquePartitioning {
 	 * The partitioning is modeled as a list of cliques.
 	 */
 	private List<List<Integer>> cliques;
-		
+	
+	/**
+	 * List of indices of cliques that have been merged and are not directly encoded in the constraint matrix.
+	 */
+	private List<Integer> mergedCliqueIndices;
+
 	/**
 	 * Initializes and constructs a partitioning of the array of uncertain variables using a given conflict graph.
 	 */
 	public CliquePartitioning(Variable[] uncertainVariables, ConflictGraph conflictGraph, AlgorithmParameters algorithmParameters) throws IOException {
 		this.uncertainVariables = uncertainVariables;
 		this.cliques = new ArrayList<List<Integer>>(uncertainVariables.length);
+		this.mergedCliqueIndices = new ArrayList<Integer>();
 		this.partitionCliques(uncertainVariables, conflictGraph, algorithmParameters);
 	}
 	
@@ -45,11 +51,19 @@ public class CliquePartitioning {
 	public List<List<Integer>> getCliques() {
 		return cliques;
 	}
+
+	
+	/**
+	 * Returns the list of indices of cliques that have been merged and are not directly encoded in the constraint matrix.
+	 */
+	public List<Integer> getMergedCliqueIndices() {
+		return mergedCliqueIndices;
+	}
 	
 	/**
 	 * Adds a clique to the partitioning and sets the clique for the included variables.
 	 */
-	public void addClique(List<Integer> clique) {
+	private void addClique(List<Integer> clique) {
 		cliques.add(clique);
 		for (Integer index : clique) {
 			uncertainVariables[index].setClique(clique);
@@ -116,6 +130,10 @@ public class CliquePartitioning {
 				potentialCliqueMembers.retainAll(conflictGraph.getNeighbors(cliqueMember));
 			}
 			
+			//If there are potential clique members, then the initial clique will be extended.
+			//Important for determining whether the clique is merged of different conflicts or directly encoded in the constraint matrix.
+			boolean extended = !potentialCliqueMembers.isEmpty();
+			
 			//While there exists a potential member, which is guaranteed to be a neighbor of all clique members,
 			//we add the new member and update the set of potential members.
 			while (!potentialCliqueMembers.isEmpty()) {
@@ -132,6 +150,11 @@ public class CliquePartitioning {
 				clique.add(modelVariableToIndex.get(modelVar));
 			}
 			this.addClique(clique);
+			
+			//If the clique was extended and contains more than two indices, then it is merged and not directly encoded in the constraint matrix.
+			if (clique.size() > 2 && extended) {
+				mergedCliqueIndices.add(cliques.size()-1);
+			}
 		}
 		output = "Finished Partitioning within "+(Math.pow(10, -9)*(System.nanoTime()-startTimePartitioning))+" sec"
 				+"\nMerged "+uncertainVariables.length+" Uncertain Variables in "+this.cliques.size()+" Cliques.";

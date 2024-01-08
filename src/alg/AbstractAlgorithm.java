@@ -1,9 +1,7 @@
 package alg;
 
-import java.io.BufferedReader;
 import java.io.FileWriter;
 import java.io.IOException;
-import java.io.InputStreamReader;
 import java.lang.reflect.Field;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -12,6 +10,13 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+
+import javax.swing.Box;
+import javax.swing.BoxLayout;
+import javax.swing.JComboBox;
+import javax.swing.JLabel;
+import javax.swing.JOptionPane;
+import javax.swing.JPanel;
 
 import gurobi.GRB;
 import gurobi.GRBException;
@@ -38,11 +43,11 @@ public abstract class AbstractAlgorithm {
 	/**
 	 * The best known solution value. 
 	 */
-	protected double primalBound = DEFAULT_PRIMAL_BOUND;
+	private double primalBound = DEFAULT_PRIMAL_BOUND;
 	/**
 	 * The best known dual bound on the solution value.
 	 */
-	protected double dualBound = DEFAULT_DUAL_BOUND;
+	private double dualBound = DEFAULT_DUAL_BOUND;
 	/**
 	 * Stores the best known solution by mapping each variable to its value.  
 	 */
@@ -99,7 +104,7 @@ public abstract class AbstractAlgorithm {
 		}
 		executeAlgorithm();
 		endTime = System.nanoTime();
-		primalDualIntegral.update(primalBound, dualBound, true);
+		primalDualIntegral.update(true);
 		
 		String output = "\n##########################################################\n"
 				+ "##### Finished Solving"
@@ -142,10 +147,25 @@ public abstract class AbstractAlgorithm {
 		return primalBound;
 	}
 	/**
+	* Updates the primal bound with a new incumbent value.
+	*/
+	public void setPrimalBound(double primalBound) {
+		this.primalBound = primalBound;
+		this.primalDualIntegral.update(false);
+	}
+	
+	/**
 	* Returns the dual bound computed by the algorithm.
 	*/
 	public double getDualBound() {
 		return dualBound;
+	}
+	/**
+	* Updates the dual bound.
+	*/
+	public void setDualBound(double dualBound) {
+		this.dualBound = dualBound;
+		this.primalDualIntegral.update(false);
 	}
 
 	/**
@@ -381,6 +401,7 @@ public abstract class AbstractAlgorithm {
 				superClass = superClass.getSuperclass();
 			}
 			
+			//Strategies were given as arguments when executing the program  
 			if (argList != null) {
 				//Obtains optional arguments.
 				for (String arg : argList) {
@@ -397,54 +418,40 @@ public abstract class AbstractAlgorithm {
 				}
 				writeOutput("", algorithmParameters);
 			}
+			
+			//Strategies are set via dialog
 			else {
-				int counter = 0;
-				while (true) {
-					BufferedReader consoleReader = new BufferedReader(new InputStreamReader(System.in));
-					String request = "\nDo you want to specify ";
-					if (counter > 0) {
-						request += "further ";
-					}
-					request += "strategies for the algorithm?\n"
-							+ "Type in one of the following strategies to be defined (leave blank to not change strategies):\n";
-					for (Field field : fields) {
-						try {
-							request += field.get(this).getClass().getSimpleName()+" ";
-						} catch (IllegalArgumentException | IllegalAccessException e) {	}
-					}
-					System.out.println(request);
-					String fieldClassName = consoleReader.readLine();
-					if (fieldClassName.isEmpty()) {
-						break;
-					}
-					Field chosenField = null;
-					for (Field field : fields) {
-						try {
-							if (field.get(this).getClass().getSimpleName().toLowerCase().equals(fieldClassName.toLowerCase())) {
-								chosenField = field;
-								fieldClassName = field.get(this).getClass().getSimpleName();
-							}
-						} catch (IllegalArgumentException | IllegalAccessException e) {	}
-					}
-					if (chosenField != null) {
-						try {
-							request = "Type in one of the following options:\n";
-							for (Enum<?> strategy : EnumSet.allOf(((Enum<?>) chosenField.get(this)).getDeclaringClass())) {
-								request += strategy.name()+" ";
-							}
-							System.out.println(request);
-							String input = consoleReader.readLine().toUpperCase();
-							chosenField.set(this, Enum.valueOf(((Enum<?>) chosenField.get(this)).getDeclaringClass(), input));
-							System.out.println("Set "+fieldClassName+" to "+input);
-							counter++;
-						} catch (IllegalArgumentException | IllegalAccessException e) {
-							System.out.println("The input could not be matched to a strategy.");
+		        JPanel strategyPanel = new JPanel();
+		        strategyPanel.setLayout(new BoxLayout(strategyPanel, BoxLayout.Y_AXIS));
+		        
+		        List<JComboBox<String>> fieldBoxes = new ArrayList<JComboBox<String>>();
+				for (Field field : fields) {
+					try {
+				        JComboBox<String> fieldBox = new JComboBox<String>();
+						for (Enum<?> option : EnumSet.allOf(((Enum<?>) field.get(this)).getDeclaringClass())) {
+							fieldBox.addItem(option.name());
 						}
-					}
-					else {
-						System.out.println("The input could not be matched to a strategy.");
+						fieldBox.setSelectedItem(((Enum<?>)field.get(this)).name());
+						fieldBoxes.add(fieldBox);
+						
+						strategyPanel.add(new JLabel(field.get(this).getClass().getSimpleName()));
+						strategyPanel.add(fieldBox);
+						strategyPanel.add(Box.createVerticalStrut(20));
+					} catch (IllegalArgumentException | IllegalAccessException e) {
+						e.printStackTrace();
 					}
 				}
+		        
+			    int result = JOptionPane.showConfirmDialog(null, strategyPanel, "Specify Algorithm Strategies", JOptionPane.DEFAULT_OPTION);
+			    if (result == JOptionPane.OK_OPTION) {
+			    	for (int i = 0; i < fields.size(); i++) {
+						try {
+							fields.get(i).set(this, Enum.valueOf(((Enum<?>) fields.get(i).get(this)).getDeclaringClass(), (String)fieldBoxes.get(i).getSelectedItem()));
+						} catch (IllegalArgumentException | IllegalAccessException e) {
+							e.printStackTrace();
+						}
+					}
+			    }
 			}
 		}
 
@@ -454,9 +461,9 @@ public abstract class AbstractAlgorithm {
 	/**
 	 * Computes the integral of the gap between the primal and dual bound.
 	 * Here, the gap is defined as abs(primal-dual)/max(abs(primal), abs(dual)), such that it is bound by 1.
-	 * For accuracy, the integral should be called once new bounds are available.
-	 * It will be called at the end of the algorithm.
-	 * If the bounds are not updated in between then the integral will be equal to the elapsed time. 
+	 * For accuracy, the update method should be called as soon as new bounds are available.
+	 * Furthermore, update needs to be called at the end of the algorithm.
+	 * If the bounds are not updated during the run time, then the integral will be equal to the elapsed time. 
 	 */
 	protected class PrimalDualIntegral {
 		private double integral;
@@ -472,7 +479,7 @@ public abstract class AbstractAlgorithm {
 			lastTimeStamp = startTime;
 		}
 		
-		void update(double primalBound, double dualBound, boolean forceUpdate) {
+		void update(boolean forceUpdate) {
 			long time = System.nanoTime();
 			if (primalBound != lastPrimalBound || dualBound != lastDualBound || forceUpdate) {
 				double primalDualGap = computePrimalDualGap(primalBound, dualBound);

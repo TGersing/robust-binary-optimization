@@ -71,6 +71,18 @@ public abstract class TreeNode {
 	}
 	
 	/**
+	 * Updates the dual bound of the node and its contained possible values for z with a new bound.
+	 */
+	public void updateDualBound(double newDualBound) {
+		if (newDualBound > dualBound) {
+			dualBound = newDualBound;
+			for (PossibleZ possibleZ : possibleZs) {
+				possibleZ.updateDualBound(newDualBound);
+			}
+		}
+	}
+	
+	/**
 	 * Writes a node to a string representing the interval defined by the possible values for z.
 	 */
 	@Override

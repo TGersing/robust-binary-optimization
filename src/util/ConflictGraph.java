@@ -45,7 +45,7 @@ public class ConflictGraph {
 	private Map<GRBVar, List<GRBVar>> adjacentVariables;
 	
 	/**
-	 * Constructor initializing an empty conflict graph.
+	 * Constructor obtaining a model with its uncertain variables and computing the conflict graph.
 	 */
 	public ConflictGraph(GRBModel model, GRBVar[] uncertainModelVariables, AlgorithmParameters algorithmParameters) throws GRBException, IOException {
 		incidentHyperEdges = new HashMap<GRBVar, List<HyperEdge>>();
@@ -57,7 +57,7 @@ public class ConflictGraph {
 	 * Adds a hyper edge to the graph by appending it to the list of incident hyper edges
 	 * for all variables contained within the edge.
 	 */
-	public void addHyperEdge(HyperEdge hyperEdge) {
+	private void addHyperEdge(HyperEdge hyperEdge) {
 		for (GRBVar variable : hyperEdge.getVariables()) {
 			if (!incidentHyperEdges.containsKey(variable)) {
 				incidentHyperEdges.put(variable, new ArrayList<HyperEdge>(1));
@@ -69,11 +69,12 @@ public class ConflictGraph {
 	/**
 	 * Adds a simple edge to the graph by adding the end nodes to the lists of adjacent variables.
 	 */
-	public void addEdge(GRBVar variable1, GRBVar variable2) {
+	private void addEdge(GRBVar variable1, GRBVar variable2) {
 		if (!adjacentVariables.containsKey(variable1)) {
 			adjacentVariables.put(variable1, new ArrayList<GRBVar>(1));
 		}
 		adjacentVariables.get(variable1).add(variable2);
+		
 		if (!adjacentVariables.containsKey(variable2)) {
 			adjacentVariables.put(variable2, new ArrayList<GRBVar>(1));
 		}
@@ -257,24 +258,24 @@ public class ConflictGraph {
 		/**
 		 * Variables in the original hyper edge.
 		 */
-		List<GRBVar> variablesOriginalHyperEdge;
+		private List<GRBVar> variablesOriginalHyperEdge;
 		
 		/**
 		 * The extra variable that is added by dropping other variables.
 		 * This field is null if the current HyperEdge models the original one. 
 		 */
-		GRBVar extraVar;
+		private GRBVar extraVar;
 
 		/**
 		 * Maximum index up to which the variables in the original hyper edge are
 		 * neighbors to the extra variable.
 		 */
-		int maxIndexSubEdge;
+		private int maxIndexSubEdge;
 		
 		/**
 		 * Constructor setting the original variable, the maximum index of the su hyper edge and the extra variable.
 		 */
-		public HyperEdge(List<GRBVar> variablesOriginalHyperEdge, int maxIndexSubEdge, GRBVar extraVar) {
+		HyperEdge(List<GRBVar> variablesOriginalHyperEdge, int maxIndexSubEdge, GRBVar extraVar) {
 			this.variablesOriginalHyperEdge = variablesOriginalHyperEdge;
 			this.maxIndexSubEdge = maxIndexSubEdge;
 			this.extraVar = extraVar;
@@ -285,7 +286,7 @@ public class ConflictGraph {
 		 * If we have an extra variable, then this is added to the appropriate sub hyper edge.
 		 * Otherwise, we return the variables of the original hyper edge.
 		 */
-		public List<GRBVar> getVariables() {
+		List<GRBVar> getVariables() {
 			if (extraVar == null) {
 				return variablesOriginalHyperEdge;
 			}
@@ -304,8 +305,8 @@ public class ConflictGraph {
 	 * To allow for sorting, the tuple is comparable with respect to the coefficient.  
 	 */
 	private class Tuple implements Comparable<Tuple>{
-		GRBVar var;
-		double coeff;
+		private  GRBVar var;
+		private  double coeff;
 		
 		public Tuple(GRBVar var, double coeff) {
 			this.var = var;

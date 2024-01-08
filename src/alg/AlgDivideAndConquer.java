@@ -2,6 +2,8 @@ package alg;
 
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -9,7 +11,9 @@ import java.util.Set;
 import java.util.TreeSet;
 
 import alg.AlgDivideAndConquer.DnCStrategies.DnCOptimalityCutsStrategy;
+import alg.SubproblemNominalGurobi.MasterCallback;
 import alg.SubproblemNominalGurobi.NOSStrategies;
+import alg.SubproblemNominalGurobi.NOSStrategies.NOSTerminationStrategy;
 import gurobi.GRBException;
 import util.CliquePartitioning;
 import util.ConflictGraph;
@@ -86,11 +90,12 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 		ConflictGraph conflictGraph = null;
 		if (dncStrategies.getCliqueStrategy() == RobustAlgorithmStrategies.CliqueStrategy.CLIQUES_ENABLE) {
 			conflictGraph = new ConflictGraph(subproblemNominal.getModel(), subproblemNominal.getUncertainModelVariables(), algorithmParameters);
+			//Computes cliques, which are stored with the variables for computing better estimators
 			subproblemNominal.setCliquePartitioning(new CliquePartitioning(subproblemNominal.getUncertainVariables(), conflictGraph, algorithmParameters));
 		}
 		//Computes a list of possible optimal choices for z respecting the chosen filtering and clique strategies.
 		List<PossibleZ> possibleZs = computePossibleZs(subproblemNominal.getUncertainVariables(), subproblemNominal.getGamma(), dncStrategies, conflictGraph, algorithmParameters);
-
+		
 		output = "\n###############################\n"
 				+ "##### Start Divide and Conquer"
 				+ "\n###############################";
@@ -108,7 +113,7 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 		initialZs.add(initialNode.getPossibleZs().get(possibleZs.size()-1));
 		
 		for (PossibleZ chosenZ : initialZs) {
-			//Terminates the algorithm if the timelimit is reached
+			//Terminates the algorithm if the time limit is reached
 			if (deadline.isPresent() && System.nanoTime() > deadline.get()) {
 				output = "\n###########################\n"
 						+ "##### Reached Time Limit"
@@ -121,9 +126,10 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 			//Removes the chosen z from the set of remaining possible values of z.
 			initialNode.getPossibleZs().remove(chosenZ);
 			numberRemainingPossibleZ--;
-			//Updates the minimum dual bound computed for all subproblems.
-			minimumDualBoundConsideredSubproblems = Math.min(chosenZ.getDualBound(), minimumDualBoundConsideredSubproblems);
 		}
+		
+		//Prunes values of z from the node 
+		prunePossibleZinNodes();
 		
 		//Removes the initial node if the set of remaining possible z is empty. This will terminate the algorithm.
 		if (initialNode.getPossibleZs().isEmpty()) {
@@ -141,54 +147,31 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 				break;
 			}
 			
+			//Sets the dual bound as the minimum dual bound of all pruned and remaining nodes.
+			updateGlobalDualBound();
+			primalDualIntegral.update(true);
+			
 			output = "\n##### DnC Tree Information\n"
 					+ "Elapsed Time = "+(System.nanoTime()-startTime)/Math.pow(10, 9)+"\n"
 					+ "Number Remaining Nodes = "+remainingNodes.size()
 					+ "\nNumber Remaining Possible Z = "+numberRemainingPossibleZ
-					+ "\nCurrent Primal Bound = "+primalBound
-					+ "\nCurrent Dual Bound = "+dualBound
-					+ "\nRelative Optimality Gap = "+(AbstractAlgorithm.getRelativeGap(primalBound, dualBound)*100)+"%";
+					+ "\nCurrent Primal Bound = "+getPrimalBound()
+					+ "\nCurrent Dual Bound = "+getDualBound()
+					+ "\nRelative Optimality Gap = "+(getRelativeGap()*100)+"%"
+					+ "\nCurrent Primal-Dual Integral = "+getPrimalDualIntegral();
 			writeOutput(output);
 			
-			//We select the first node in our tree.
-			DnCNode chosenNode = remainingNodes.first();
-			remainingNodes.remove(chosenNode);
+			//We select and remove the first node in our tree.
+			DnCNode currentNode = remainingNodes.pollFirst();
 			
-			//Tries to prune possible values for z in the node using their individual dual bounds.
-			String chosenNodeString = chosenNode.toString();
-			List<PossibleZ> prunedPossibleZs = performPruning(chosenNode);
-			if (!prunedPossibleZs.isEmpty()) {
-				//Prints the original node and the pruned values for z to the log.
-				output = "\nChosen Node Before Individual Pruning: "+chosenNodeString
-						+ "\nPruned values via estimated dual bound:\n";
-				for (PossibleZ possibleZ : prunedPossibleZs) {
-					output += possibleZ+"  ";
-				}
-				writeOutput(output);
-				//The node can be pruned if there are no possible values left.
-				if (chosenNode.getPossibleZs().isEmpty()) {
-					output = "Node is empty after pruning";
-					writeOutput(output);
-					continue;
-				}
-				else {
-					//Prints the node after pruning to the log.
-					output = "Chosen Node After Individual Pruning: "+chosenNode;
-					writeOutput(output);
-				}
-			}
-			else {
-				//Prints the original node to the log if we could not prune individual values.
-				output = "\nChosen Node: "+chosenNode;
-				writeOutput(output);
-			}
+			//We choose the middle value of the possible values of z.
+			int indexZ = currentNode.getPossibleZs().size()/2;
+			PossibleZ chosenPossibleZ = currentNode.getPossibleZs().get(indexZ);
 			
-			//If the node could not be pruned, we choose the middle value of the possible values of z.
-			int indexZ = chosenNode.getPossibleZs().size()/2;
-			PossibleZ chosenPossibleZ = chosenNode.getPossibleZs().get(indexZ);
+			//Solve the nominal subproblem for the chosen z.
+			solveNOS(currentNode, chosenPossibleZ);
 			
-			//Solves the nominal subproblem for the chosen z.
-			solveNOS(chosenNode, chosenPossibleZ);
+			//The chosen z doesn't need to be considered any longer.
 			numberRemainingPossibleZ--;
 			
 			//Splits the interval of possible z into two subsets, excluding the already considered middle value of z.
@@ -197,61 +180,65 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 			if (indexZ > 0) {
 				List<PossibleZ> possibleZList = new ArrayList<PossibleZ>();
 				for (int index = 0; index < indexZ; index++) {
-					possibleZList.add(chosenNode.getPossibleZs().get(index));
+					possibleZList.add(currentNode.getPossibleZs().get(index));
 				}
 				DnCNode newNode = new DnCNode(possibleZList);
 				//Sets the primal bounds of the values of z defining the boundaries of the node that are used for the sorting of nodes.
-				newNode.setLowerPrimalBound(chosenNode.getLowerPrimalBound());
+				newNode.setLowerPrimalBound(currentNode.getLowerPrimalBound());
 				newNode.setUpperPrimalBound(subproblemNominal.getPrimalBound());
 				remainingNodes.add(newNode);
 				output += "\nAdded new node "+newNode;
 			}
-			if (indexZ+1 < chosenNode.getPossibleZs().size()) {
+			if (indexZ+1 < currentNode.getPossibleZs().size()) {
 				List<PossibleZ> possibleZList = new ArrayList<PossibleZ>();
-				for (int index = indexZ+1; index < chosenNode.getPossibleZs().size(); index++) {
-					possibleZList.add(chosenNode.getPossibleZs().get(index));
+				for (int index = indexZ+1; index < currentNode.getPossibleZs().size(); index++) {
+					possibleZList.add(currentNode.getPossibleZs().get(index));
 				}
 				DnCNode newNode = new DnCNode(possibleZList);
 				//Sets the primal bounds of the values of z defining the boundaries of the node that are used for the sorting of nodes.
 				newNode.setLowerPrimalBound(subproblemNominal.getPrimalBound());
-				newNode.setUpperPrimalBound(chosenNode.getUpperPrimalBound());
+				newNode.setUpperPrimalBound(currentNode.getUpperPrimalBound());
 				remainingNodes.add(newNode);
 				output += "\nAdded new node "+newNode;
 			}
 			writeOutput(output);
+			
+			//Prunes whole nodes w.r.t. to their dual bound if possible
+			pruneNodes();
+			//Prunes single possible values for z within nodes w.r.t. their individual dual bound if possible
+			prunePossibleZinNodes();
 		}
 		
-		//Sets the dual bound as the minimum dual bound of all pruned and remaining nodes.
-		dualBound = minimumDualBoundConsideredSubproblems;
-		for (DnCNode node : remainingNodes) {
-			dualBound = Math.min(dualBound, node.getDualBound());
-		}
+		//Updates the dual bound to be the minimum of all pruned nodes and
+		//the minimum dual bound of the not yet considered nodes.
+		updateGlobalDualBound();
 		
-		//Stores best solution found
-		solution = new LinkedHashMap<Variable, Double>(solutionValues.length);
-		for (int i = 0; i < solutionValues.length; i++) {
-			solution.put(subproblemNominal.getNominalVariables()[i], solutionValues[i]);
+		//Stores best solution found, if available
+		if (solution != null) {
+			solution = new LinkedHashMap<Variable, Double>(solutionValues.length);
+			for (int i = 0; i < solutionValues.length; i++) {
+				solution.put(subproblemNominal.getNominalVariables()[i], solutionValues[i]);
+			}
 		}
 	}
 
 	/**
 	 * Solves the nominal subproblem for the chosen z, contained in the chosen node.
 	 */
-	private void solveNOS(DnCNode chosenNode, PossibleZ chosenPossibleZ) throws IOException, GRBException {
+	private void solveNOS(DnCNode currentNode, PossibleZ chosenPossibleZ) throws IOException, GRBException {
 		String output = "\n##### Solving NOS(z) for z="+chosenPossibleZ;
 		writeOutput(output);
 		
 		//Alters the nominal subproblem with respect to z.
 		subproblemNominal.updateZ(chosenPossibleZ);
-		subproblemNominal.setGlobalPrimalBound(primalBound);
 		
 		//Determines the set of remaining values for z for which we compute estimators.
 		//If we use optimality cuts, then these are defined by the lowest and highest value in the node.
 		//Then we only compute estimators for the values of z in the node.
 		//If we do not use optimality cuts then we compute estimators for all remaining values for z.
 		TreeSet<PossibleZ> restrictedRemainingPossibleZs = new TreeSet<PossibleZ>();
-		if (dncStrategies.getOptimalityCutsStrategy() == DnCOptimalityCutsStrategy.OPTCUTS_ENABLE) {
-			restrictedRemainingPossibleZs.addAll(chosenNode.getPossibleZs());
+		if (dncStrategies.getOptimalityCutsStrategy() == DnCOptimalityCutsStrategy.IPOPTCUTS_ENABLE) {
+			restrictedRemainingPossibleZs.addAll(currentNode.getPossibleZs());
 			PossibleZ lowerBoundOptCut = restrictedRemainingPossibleZs.first();
 			PossibleZ upperBoundOptCut = restrictedRemainingPossibleZs.last();
 			subproblemNominal.addOptimalityCuts(lowerBoundOptCut, upperBoundOptCut);
@@ -269,50 +256,225 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 		else if (dncStrategies.getEstimatorStrategy() == DnCStrategies.DnCEstimatorStrategy.ESTIMATORS_HRS) {
 			chosenPossibleZ.setHRSEstimators(restrictedRemainingPossibleZs, subproblemNominal.getGamma());
 		}
-		
 		writeOutput("");
+		
+		//Initializes the callback used for reporting primal and dual bounds from the subproblem to the master.
+		subproblemNominal.setMasterCallback(new DnCCallbackIntegerSubproblems(currentNode, chosenPossibleZ));
 		//Tries to solve the nominal subproblem within the remaining time.
 		subproblemNominal.solve(getRemainingTime());
 		
 		//Updates the dual bound of the chosen value for z.
 		chosenPossibleZ.updateDualBound(subproblemNominal.getDualBound());
+		minimumDualBoundConsideredSubproblems = Math.min(chosenPossibleZ.getDualBound(), minimumDualBoundConsideredSubproblems);
+	}
+	
+
+	
+	/**
+	 * Callback passed to the integer subproblems.
+	 * Reports bounds from the integer subproblem to the master and asks for termination.
+	 */
+	protected class DnCCallbackIntegerSubproblems implements MasterCallback{
+		/**
+		 * The node for which we solve the integer subproblem.
+		 */
+		private DnCNode currentNode;
 		
-		//Updates the primal bound.
-		double incumbentValue = subproblemNominal.getGlobalPrimalBound();
-		if (incumbentValue < primalBound) {
-			primalBound = incumbentValue;
-			solutionValues = subproblemNominal.getIncumbentValues();
+		/**
+		 * Value of z for which we compute the nominal subproblem.
+		 */
+		private PossibleZ chosenPossibleZ;
+		
+		/**
+		 * Saves the last time stamp at which we were able to prune a possible value of z via estimators. 
+		 */
+		private Long timeStampLastPrune = null;
+		
+		/**
+		 * Remaining values of z that are not yet pruned for which we have computed an estimator.
+		 */
+		private ArrayList<PossibleZ> remainingComparedPossibleZs;
+
+		/**
+		 * Constructor receiving the chosen node and its surrounding nodes.
+		 */
+		private DnCCallbackIntegerSubproblems(DnCNode currentNode, PossibleZ chosenPossibleZ) {
+			remainingComparedPossibleZs = new ArrayList<PossibleZ>(chosenPossibleZ.getEstimators().keySet());
+			this.currentNode = currentNode;
+			this.chosenPossibleZ = chosenPossibleZ;
 		}
 		
-		//Updates the individual dual bounds and the dual bounds for all nodes.
-		chosenPossibleZ.estimateDualBounds(subproblemNominal.getDualBound());
-		dualBound = minimumDualBoundConsideredSubproblems;
-		for (DnCNode node : remainingNodes) {
-			node.updateDualBound();
-			dualBound = Math.min(dualBound, node.getDualBound());
+		/**
+		 * Receives primal and dual bounds from the subproblem to update the bounds in the master problem.
+		 */
+		public boolean updatePrimalDualBounds(double primalBound, double subproblemDualBound) {
+			boolean boundChanged = false;
+			
+			//Updates the primal bound
+			if (primalBound < getPrimalBound()) {
+				setPrimalBound(primalBound);
+				solutionValues = subproblemNominal.getImprovedNominalSolutionValues();
+				boundChanged = true;
+				
+				try {
+					writeOutput("###Found new global primal bound = "+getPrimalBound());
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+			}
+			//Updates dual bounds of possible z contained in this node and potentially surrounding nodes via estimators.
+			if (chosenPossibleZ.getDualBound() < subproblemDualBound) {
+				chosenPossibleZ.updateDualBound(subproblemDualBound);
+				boundChanged = true;
+				
+				Set<DnCNode> estimatedNodes = new HashSet<>();
+				estimatedNodes.add(currentNode);
+				if (dncStrategies.optimalityCutsStrategy == DnCOptimalityCutsStrategy.IPOPTCUTS_DISABLE) {
+					estimatedNodes.addAll(remainingNodes);
+				}
+
+				for (DnCNode node : estimatedNodes) {
+					boolean individualBoundChanged = false;
+					for (PossibleZ comparedPossibleZ : node.getPossibleZs()) {
+						if (chosenPossibleZ.getEstimators().containsKey(comparedPossibleZ)) {
+							double estimator = chosenPossibleZ.getEstimators().get(comparedPossibleZ);
+							if (comparedPossibleZ.updateDualBound(subproblemDualBound - estimator)) {
+								individualBoundChanged = true;
+							}
+						}
+					}
+					if (individualBoundChanged) {
+						node.updateDualBound();
+					}
+				}
+				
+				updateGlobalDualBound(currentNode);
+			}
+			return boundChanged;
 		}
-		primalDualIntegral.update(primalBound, dualBound, false);
+		
+		/**
+		 * Receives primal and dual bounds for updating and returns whether the subproblem may be terminated.
+		 */
+		public boolean updateBoundsAndDecideTermination(double improvedPrimalBound, double subproblemPrimalBound, double subproblemDualBound) {
+			boolean boundChanged = this.updatePrimalDualBounds(improvedPrimalBound, subproblemDualBound);
+			
+			//Checks whether the subproblem can be terminated with respect to the global primal bound and its current dual bound.
+			if (isOptimal(getPrimalBound(), subproblemDualBound)) {
+				
+				if (dncStrategies.terminationStrategy == NOSTerminationStrategy.TERMINATION_DIRECT) {
+					return true;
+				}
+				else if (dncStrategies.terminationStrategy == NOSTerminationStrategy.TERMINATION_ESTIMATORS) {
+					//Initializes the time stamp and remaining possible z for pruning.
+					if (timeStampLastPrune == null) {
+						timeStampLastPrune = System.nanoTime();
+					}
+					//Checks whether we can hope for pruning additional possible z.
+					boolean pruningPossible = false;
+					if (boundChanged) {
+						for (int i = remainingComparedPossibleZs.size()-1; i >= 0; i--) {
+							PossibleZ possibleZ = remainingComparedPossibleZs.get(i);
+							//Checks whether the dual bound is good enough for pruning.
+							if (isOptimal(getPrimalBound(), possibleZ.getDualBound())) {
+								//Removes the possible z and sets the time stamp.
+								remainingComparedPossibleZs.remove(i);
+								timeStampLastPrune = System.nanoTime();
+							}
+							//If raising the dual bound up to the primal bound would be sufficient
+							//to prune the possible z then we can hope for pruning it later and
+							//don't terminate the subproblem if the last time stamp is not too far in the past.
+							else if (isOptimal(getPrimalBound(), subproblemPrimalBound - chosenPossibleZ.getEstimators().get(possibleZ))) {
+								pruningPossible = true;
+							}
+						}
+					}
+					//If the bounds didn't change, then pruning was possible before and is still now
+					else {
+						pruningPossible= true;
+					}
+					//If there is hope for pruning further possible z and the last pruning
+					//has happened in the last 10 seconds, then we continue solving the subproblem.
+					//Otherwise we return true and terminate.
+					if (!pruningPossible || (System.nanoTime()-timeStampLastPrune)/Math.pow(10, 9) >= 10) {
+						return true;
+					}
+				}
+			}
+			return false;
+		}
 	}
 	
 	/**
-	 * Tries to prune possible values for z in a node using the primal bound and the individual dual bounds.
-	 * Returns a set of pruned values. 
+	 * Updates the dual bound to be the minimum of all pruned nodes, the current node, and the minimum dual bound of the not yet considered nodes.
 	 */
-	private List<PossibleZ> performPruning(DnCNode chosenNode) throws IOException {
-		List<PossibleZ> prunedPossibleZs = new ArrayList<PossibleZ>();
-		for (int zIndex = chosenNode.getPossibleZs().size()-1; zIndex >= 0; zIndex--) {
-			PossibleZ possibleZ = chosenNode.getPossibleZs().get(zIndex);
-			if (isOptimal(primalBound, possibleZ.getDualBound())) {
-				//Updates the dual bound of all considered nominal subproblems.
-				minimumDualBoundConsideredSubproblems = Math.min(minimumDualBoundConsideredSubproblems, possibleZ.getDualBound());
-				chosenNode.getPossibleZs().remove(zIndex);
-				prunedPossibleZs.add(possibleZ);
-				numberRemainingPossibleZ--;
+	private void updateGlobalDualBound(DnCNode currentNode) {
+		double newDualBoud = Math.min(minimumDualBoundConsideredSubproblems, currentNode.getDualBound());
+		for (DnCNode node : remainingNodes) {
+			newDualBoud = Math.min(newDualBoud, node.getDualBound());
+		}
+		setDualBound(newDualBoud);
+	}
+	
+	/**
+	 * Updates the dual bound to be the minimum of all pruned nodes and the minimum dual bound of the not yet considered nodes.
+	 */
+	private void updateGlobalDualBound() {
+		double newDualBoud = minimumDualBoundConsideredSubproblems;
+		for (DnCNode node : remainingNodes) {
+			newDualBoud = Math.min(newDualBoud, node.getDualBound());
+		}
+		setDualBound(newDualBoud);
+	}
+	
+	/**
+	 * Prunes all nodes whose dual bound is close enough to the current primal bound.
+	 * Returns a list of all pruned nodes.
+	 */
+	private List<DnCNode> pruneNodes() throws IOException {
+		List<DnCNode> prunedNodes = new ArrayList<DnCNode>();
+		String output = "Pruned Node";
+		Iterator<DnCNode> nodeIterator = remainingNodes.iterator();
+		while (nodeIterator.hasNext()) {
+			DnCNode node = nodeIterator.next();
+			if (isOptimal(getPrimalBound(), node.getDualBound())) {
+				output += " "+node;
+				nodeIterator.remove();
+				minimumDualBoundConsideredSubproblems = Math.min(minimumDualBoundConsideredSubproblems, node.getDualBound());
+				numberRemainingPossibleZ -= node.getPossibleZs().size();
+				prunedNodes.add(node);
 			}
+		}
+		if (!prunedNodes.isEmpty()) {
+			writeOutput(output);
+		}
+		return prunedNodes;
+	}
+	
+	/**
+	 * Tries to prune the possible values for z within nodes using the primal bound and the individual dual bounds.
+	 * Returns a List of pruned values. 
+	 */
+	private List<PossibleZ> prunePossibleZinNodes() throws IOException {
+		List<PossibleZ> prunedPossibleZs = new ArrayList<PossibleZ>();
+		String output = "Pruned Possible z:\n";
+		for (DnCNode node : remainingNodes) {
+			for (int zIndex = node.getPossibleZs().size()-1; zIndex >= 0; zIndex--) {
+				PossibleZ possibleZ = node.getPossibleZs().get(zIndex);
+				if (isOptimal(getPrimalBound(), possibleZ.getDualBound())) {
+					output += " "+possibleZ;
+					minimumDualBoundConsideredSubproblems = Math.min(minimumDualBoundConsideredSubproblems, possibleZ.getDualBound());
+					node.getPossibleZs().remove(zIndex);
+					prunedPossibleZs.add(possibleZ);
+					numberRemainingPossibleZ--;
+				}
+			}
+		}
+		if (!prunedPossibleZs.isEmpty()) {
+			writeOutput(output);
 		}
 		return prunedPossibleZs;
 	}
-	
 
 	
 	/**
@@ -332,8 +494,8 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 		 * Enum type specifying whether we use optimality-cuts.
 		 */
 		public enum DnCOptimalityCutsStrategy {
-			OPTCUTS_ENABLE,
-			OPTCUTS_DISABLE;
+			IPOPTCUTS_ENABLE,
+			IPOPTCUTS_DISABLE;
 		}
 		
 		DnCEstimatorStrategy estimatorStrategy;
@@ -352,7 +514,7 @@ public class AlgDivideAndConquer extends AbstractAlgorithm implements RobustAlgo
 			improvingZStrategy = ImprovingZStrategy.IMPROVINGZ_ENABLE;
 			terminationStrategy = NOSTerminationStrategy.TERMINATION_ESTIMATORS;
 			estimatorStrategy = DnCEstimatorStrategy.ESTIMATORS_IMPROVED;
-			optimalityCutsStrategy = DnCOptimalityCutsStrategy.OPTCUTS_ENABLE;
+			optimalityCutsStrategy = DnCOptimalityCutsStrategy.IPOPTCUTS_ENABLE;
 		}
 
 		public DnCEstimatorStrategy getEstimatorStrategy() {

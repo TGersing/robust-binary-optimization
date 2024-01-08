@@ -5,7 +5,9 @@ import java.util.LinkedHashMap;
 import java.util.List;
 
 import alg.RobustAlgorithm.RobustAlgorithmStrategies.CliqueStrategy;
+import alg.SubproblemNominalGurobi.MasterCallback;
 import alg.SubproblemNominalGurobi.NOSStrategies;
+import alg.SubproblemNominalGurobi.NOSStrategies.NOSTerminationStrategy;
 import gurobi.GRBException;
 import util.ConflictGraph;
 import util.PossibleZ;
@@ -57,13 +59,16 @@ public class AlgBertsimasSimSequence extends AbstractAlgorithm implements Robust
 				+ "##### Start Preprocessing"
 				+ "\n###############################";
 		writeOutput(output);
+		
 		//Computes a conflict graph if the corresponding strategy is chosen.
 		ConflictGraph conflictGraph = null;
 		if (bsStrategies.getCliqueStrategy() == CliqueStrategy.CLIQUES_ENABLE) {
 			conflictGraph = new ConflictGraph(subproblemNominal.getModel(), subproblemNominal.getUncertainModelVariables(), algorithmParameters);
 		}
+		
 		//Computes a list of possible optimal choices for z respecting the chosen filtering and clique strategies.
 		List<PossibleZ> possibleZs = computePossibleZs(subproblemNominal.getUncertainVariables(), subproblemNominal.getGamma(), bsStrategies, conflictGraph, algorithmParameters);
+		
 		//The final dual bound is the minimum over the computed dual bound for all nominal subproblems.
 		double minimumDualBoundSubproblems = DEFAULT_PRIMAL_BOUND;
 		
@@ -90,7 +95,7 @@ public class AlgBertsimasSimSequence extends AbstractAlgorithm implements Robust
 			output = "\n##### BS Sequence Information\n"
 					+ "\nElapsed Time = "+(System.nanoTime()-startTime)/Math.pow(10, 9)
 					+ "\nNumber Remaining Possible Z = "+(possibleZs.size()-indexCurrentZ)+" of "+possibleZs.size()
-					+ "\nCurrent Primal Bound = "+primalBound;
+					+ "\nCurrent Primal Bound = "+getPrimalBound();
 			writeOutput(output);
 
 
@@ -102,34 +107,87 @@ public class AlgBertsimasSimSequence extends AbstractAlgorithm implements Robust
 			writeOutput(output);
 			
 			subproblemNominal.updateZ(currentZ);
-			subproblemNominal.setGlobalPrimalBound(primalBound);
+			subproblemNominal.setMasterCallback(new BSSCallbackIntegerSubproblems(currentZ));
 			subproblemNominal.solve(getRemainingTime());
 			
-			//Updates the primal bound.
-			double incumbentValue = subproblemNominal.getGlobalPrimalBound();
-			if (incumbentValue < primalBound) {
-				primalBound = incumbentValue;
-				solutionValues = subproblemNominal.getIncumbentValues();
-			}
-			
 			//Updates the minimum dual bound over all considered nominal subproblems.
-			minimumDualBoundSubproblems = Math.min(minimumDualBoundSubproblems, subproblemNominal.getDualBound());
+			minimumDualBoundSubproblems = Math.min(minimumDualBoundSubproblems, currentZ.getDualBound());
 			indexCurrentZ++;
 		}
 		
 		//If the algorithm terminated after considering all nominal subproblems then the dual bound is the minimum over the computed dual bound for all nominal subproblems.
-		//Otherwise the dual bound the dual bound is infinity.
+		//Otherwise the dual bound is infinity.
 		if (indexCurrentZ == possibleZs.size()) {
-			dualBound = minimumDualBoundSubproblems;
+			setDualBound(minimumDualBoundSubproblems);
 		}
 		else {
-			dualBound = DEFAULT_DUAL_BOUND;
+			setDualBound(DEFAULT_DUAL_BOUND);
 		}
 		
-		//Stores best solution found
-		solution = new LinkedHashMap<Variable, Double>(solutionValues.length);
-		for (int i = 0; i < solutionValues.length; i++) {
-			solution.put(subproblemNominal.getNominalVariables()[i], solutionValues[i]);
+		//Stores best solution found, if available
+		if (solution != null) {
+			solution = new LinkedHashMap<Variable, Double>(solutionValues.length);
+			for (int i = 0; i < solutionValues.length; i++) {
+				solution.put(subproblemNominal.getNominalVariables()[i], solutionValues[i]);
+			}
+		}
+	}
+	
+
+	
+	/**
+	 * Callback passed to the integer subproblems.
+	 * Reports bounds from the integer subproblem to the master and asks for termination.
+	 */
+	protected class BSSCallbackIntegerSubproblems implements MasterCallback{
+		/**
+		 * Value of z for which we compute the nominal subproblem.
+		 */
+		private PossibleZ chosenPossibleZ;
+		/**
+		 * Constructor receiving the chosen node and its surrounding nodes.
+		 */
+		private BSSCallbackIntegerSubproblems(PossibleZ chosenPossibleZ) {
+			this.chosenPossibleZ = chosenPossibleZ;
+		}
+		
+		/**
+		 * Receives primal and dual bounds from the subproblem to update the bounds in the master problem.
+		 */
+		public boolean updatePrimalDualBounds(double primalBound, double subproblemDualBound) {
+			boolean boundChanged = false;
+			
+			//Updates primal bound
+			if (primalBound < getPrimalBound()) {
+				setPrimalBound(primalBound);
+				solutionValues = subproblemNominal.getImprovedNominalSolutionValues();
+				boundChanged = true;
+				
+				try {
+					writeOutput("###Found new global primal bound = "+getPrimalBound());
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+			}
+			//Updates dual bound
+			if (chosenPossibleZ.getDualBound() < subproblemDualBound) {
+				chosenPossibleZ.updateDualBound(subproblemDualBound);
+				boundChanged = true;
+			}
+			return boundChanged;
+		}
+		
+		/**
+		 * Receives primal and dual bounds for updating and returns whether the subproblem may be terminated.
+		 */
+		public boolean updateBoundsAndDecideTermination(double improvedPrimalBound, double subproblemPrimalBound, double subproblemDualBound) {
+			this.updatePrimalDualBounds(improvedPrimalBound, subproblemDualBound);
+			//Checks whether the subproblem can be terminated with respect to the global primal bound and its current dual bound.
+			if (isOptimal(getPrimalBound(), subproblemDualBound)
+					&& bsStrategies.terminationStrategy == NOSTerminationStrategy.TERMINATION_DIRECT) {
+				return true;
+			}
+			return false;
 		}
 	}
 	

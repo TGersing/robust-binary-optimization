@@ -17,37 +17,44 @@ import util.PossibleZ;
 import util.Variable;
 
 /**
- * This class implements the nominal subproblems solved during the divide and conquer algorithm.
+ * This class implements the nominal subproblems solved during the Bertsimas Sim approach and the divide and conquer algorithm.
  * 
  * @author Timo Gersing
  */
 class SubproblemNominalGurobi extends SubproblemGurobi {
-	/**
-	 * The current value of z.
-	 */
-	private PossibleZ chosenZ;
-		
 	/**
 	 * Specifies strategies.
 	 */
 	private NOSStrategies nosStrategies;
 	
 	/**
-	 * The value of z for the improved solution.
+	 * The current value of z defining the nominal subproblem.
+	 */
+	private PossibleZ chosenZ;
+	
+	/**
+	 * The improved (optimal) value of z for the incumbent solution.
 	 */
 	private Double improvedZ = null;
 
 	/**
-	 * The global primal bound obtained from a prior subproblem or an improved solution.
-	 * Is used to store the solution values of improved solutions and for the termination.
+	 * The primal bound provided by a potentially improved solution.
+	 * Is always at least as good as the primal bound for the current problem.
 	 */
-	private double globalPrimalBound = AbstractAlgorithm.DEFAULT_PRIMAL_BOUND;
+	private double improvedPrimalBound = AbstractAlgorithm.DEFAULT_PRIMAL_BOUND;
+	
 	/**
 	 * Values of variables in a new incumbent. Needs to be stored because an improved sub-optimal solution
 	 * might be better than the optimal solution of the subproblem. 
 	 */
-	private double[] incumbentValues;
+	private double[] improvedNominalVariablesSolutionValues;
 	
+	/**
+	 * Callback passed to the subproblem.
+	 * Reports bounds from the subproblem to the master and asks for termination.
+	 */
+	private MasterCallback masterCallback;
+
 	/**
 	 * Constructor receiving paths to problem files as well as parameters and strategies.
 	 */
@@ -63,6 +70,8 @@ class SubproblemNominalGurobi extends SubproblemGurobi {
 	protected void resetProblem() throws GRBException {
 		super.resetProblem();
 		improvedZ = null;
+		improvedPrimalBound = AbstractAlgorithm.DEFAULT_PRIMAL_BOUND;
+		improvedNominalVariablesSolutionValues = null;
 	}
 		
 	/**
@@ -97,32 +106,16 @@ class SubproblemNominalGurobi extends SubproblemGurobi {
 	 * Obtains an incumbent solution, computes the optimal z and improves the primal bound if
 	 * the new solution is the new best.
 	 */
-	private void improveZ (double incumbentObjectiveValue, double[] incumbentNominalVariablesValues, double[] incumbentUncertainVariablesValues) {
+	private void improveZ (double[] incumbentNominalVariablesValues, double[] incumbentUncertainVariablesValues) {
 		//Computes optimal value for z.
 		double optimalZ = computeOptimalBilinearZ(incumbentUncertainVariablesValues);
 		//Computes the optimal objective value.
 		double objectiveValue = computeBilinearSolutionValue(incumbentNominalVariablesValues, incumbentUncertainVariablesValues, optimalZ);
-		//Updates the global primal bound if the new incumbent is better.
-		if (objectiveValue < globalPrimalBound) {
-			globalPrimalBound = objectiveValue;
+		//Updates the improved primal bound if the new incumbent is better.
+		if (objectiveValue < improvedPrimalBound) {
+			improvedPrimalBound = objectiveValue;
 			improvedZ = optimalZ;
-			incumbentValues = incumbentNominalVariablesValues;
-			if (objectiveValue < incumbentObjectiveValue - algorithmParameters.getAbsoluteGapTolerance()) {
-				String output = "###Improved solution with optimal z = "+optimalZ+" to the new global primal bound = "+objectiveValue;
-				try {
-					AbstractAlgorithm.writeOutput(output, algorithmParameters);
-				} catch (IOException e) {
-					e.printStackTrace();
-				}
-			}
-			else {
-				String output = "###Found new global primal bound = "+objectiveValue;
-				try {
-					AbstractAlgorithm.writeOutput(output, algorithmParameters);
-				} catch (IOException e) {
-					e.printStackTrace();
-				}
-			}
+			improvedNominalVariablesSolutionValues = incumbentNominalVariablesValues;
 		}
 	}
 
@@ -130,90 +123,49 @@ class SubproblemNominalGurobi extends SubproblemGurobi {
 	/**
 	 * Implements the callbacks for termination and improving of incumbent solutions.
 	 */
-	private class Callback extends GRBCallback {
-		/**
-		 * Saves the last time stamp at which we were able to prune a possible value of z via estimators. 
-		 */
-		private Long timeStampLastCutoff = null;
-		
-		/**
-		 * Remaining values of z that are not yet pruned for which we have computed an estimator
-		 * from the current z.
-		 */
-		private ArrayList<PossibleZ> comparedPossibleZs = null;
-		
+	private class Callback extends GRBCallback {	
 		@Override
 		protected void callback() {
+			//Stores incumbent solutions and potentially tries to improve an incumbent solution computing an optimal value for z.
 			try {
-				//Tries to terminate the subproblem respecting estimators if the option is chosen.
-				if (nosStrategies.getTerminationStrategy() == NOSTerminationStrategy.TERMINATION_ESTIMATORS && where == GRB.CB_MIP) {
-					//Queries the current primal and dual bound from the subproblem.
-					primalBound = getDoubleInfo(GRB.CB_MIP_OBJBST);
+				if (where == GRB.CB_MIPSOL) {
+					if (nosStrategies.getImprovingZStrategy() == ImprovingZStrategy.IMPROVINGZ_ENABLE) {
+						double[] incumbentNominalVariablesValues = getSolution(nominalModelVariables);
+						double[] incumbentUncertainVariablesValues = getSolution(uncertainModelVariables);
+						improveZ(incumbentNominalVariablesValues, incumbentUncertainVariablesValues);
+					}
+					else {
+						if (getDoubleInfo(GRB.CB_MIPSOL_OBJ) < improvedPrimalBound) {
+							improvedPrimalBound = getDoubleInfo(GRB.CB_MIPSOL_OBJ);
+							improvedZ = chosenZ.getValue();
+							improvedNominalVariablesSolutionValues = getSolution(nominalModelVariables);
+						}
+					}
+				}
+			} catch (GRBException e) {
+				e.printStackTrace();
+			}
+			
+			//Reports current primal and dual bounds to the master and possibly asks for termination
+			try {
+				if (where == GRB.CB_MIP) {
 					dualBound = getDoubleInfo(GRB.CB_MIP_OBJBND);
-					//Checks whether the subproblem can be terminated with respect to the global primal
-					//bound and the current dual bound.
-					if (AbstractAlgorithm.isOptimal(Math.min(primalBound, globalPrimalBound), dualBound, algorithmParameters)) {
-						if (timeStampLastCutoff == null) {
-							timeStampLastCutoff = System.nanoTime();
-							comparedPossibleZs = new ArrayList<PossibleZ>(chosenZ.getEstimators().keySet());
-						}
-						//Checks whether we can hope for pruning additional possible z.
-						boolean pruningPossible = false;
-						for (int i = comparedPossibleZs.size()-1; i >= 0; i--) {
-							//Computes the dual bound for the possible z using the estimator.
-							PossibleZ comparedPossibleZ = comparedPossibleZs.get(i);
-							double estimator = chosenZ.getEstimators().get(comparedPossibleZ);
-							double dualBoundComparedPossibleZ = Math.max(comparedPossibleZ.getDualBound(), dualBound - estimator);
-							//Checks whether the dual bound is good enough for pruning.
-							if (AbstractAlgorithm.isOptimal(Math.min(primalBound, globalPrimalBound), dualBoundComparedPossibleZ, algorithmParameters)) {
-								//Removes the possible z and sets the time stamp.
-								comparedPossibleZs.remove(i);
-								timeStampLastCutoff = System.nanoTime();
-							}
-							//If raising the dual bound up to the primal bound would be sufficient
-							//to prune the possible z then we can hope for pruning it later and
-							//don't terminate the subproblem if the last time stamp is not too far in the past.
-							else if (AbstractAlgorithm.isOptimal(Math.min(primalBound, globalPrimalBound), primalBound - estimator, algorithmParameters)) {
-								pruningPossible = true;
-							}
-						}
-						//If there is hope for pruning further possible z and the last pruning
-						//has happened in the last 10 seconds then we continue solving the subproblem.
-						if (!pruningPossible || (System.nanoTime()-timeStampLastCutoff)/Math.pow(10, 9) >= 10) {
+					
+					if (nosStrategies.getTerminationStrategy() != NOSTerminationStrategy.TERMINATION_DISABLE) {
+						if (masterCallback.updateBoundsAndDecideTermination(improvedPrimalBound, primalBound, dualBound)) {
 							String output = "###Terminated due to global primal bound";
 							try {
 								AbstractAlgorithm.writeOutput(output, algorithmParameters);
 							} catch (IOException e) {}
-
 							abort();
 						}
 					}
-				}
-
-				//Tries to terminate the subproblem directly using the global primal bound if the option is chosen.
-				if (nosStrategies.getTerminationStrategy() == NOSTerminationStrategy.TERMINATION_DIRECT && where == GRB.CB_MIP) {
-					dualBound = getDoubleInfo(GRB.CB_MIP_OBJBND);
-					if (AbstractAlgorithm.isOptimal(globalPrimalBound, dualBound, algorithmParameters)) {
-						String output = "###Terminated due to global primal bound";
-						try {
-							AbstractAlgorithm.writeOutput(output, algorithmParameters);
-						} catch (IOException e) {}
-						abort();
+					else {
+						masterCallback.updatePrimalDualBounds(improvedPrimalBound, dualBound);
 					}
 				}
 			} catch (GRBException e1) {
 				e1.printStackTrace();
-			}
-
-
-			try {
-				if (nosStrategies.getImprovingZStrategy() == ImprovingZStrategy.IMPROVINGZ_ENABLE && where == GRB.CB_MIPSOL) {
-					double[] incumbentNominalVariablesValues = getSolution(nominalModelVariables);
-					double[] incumbentUncertainVariablesValues = getSolution(uncertainModelVariables);
-					improveZ(getDoubleInfo(GRB.CB_MIPSOL_OBJ), incumbentNominalVariablesValues, incumbentUncertainVariablesValues);
-				}
-			} catch (GRBException e) {
-				e.printStackTrace();
 			}
 		}
 	}
@@ -226,12 +178,13 @@ class SubproblemNominalGurobi extends SubproblemGurobi {
 		super.solve(timeLimit);
 		
 		//Updates global primal bound
-		try {
-			if (primalBound < globalPrimalBound) {
-				globalPrimalBound = primalBound;
-				incumbentValues = model.get(GRB.DoubleAttr.X, nominalModelVariables);
-			}
-		} catch (GRBException e) { }
+		if (primalBound < improvedPrimalBound) {
+			improvedPrimalBound = primalBound;
+			try {
+				improvedNominalVariablesSolutionValues = model.get(GRB.DoubleAttr.X, nominalModelVariables);
+			} catch (GRBException e) { }
+		}
+		masterCallback.updatePrimalDualBounds(improvedPrimalBound, dualBound);
 		
 		//Writes information to the node log.
 		String output = "\n#####Finished MILP\n"
@@ -248,25 +201,33 @@ class SubproblemNominalGurobi extends SubproblemGurobi {
 	}
 	
 	/**
-	 * Returns the global primal bound.
+	 * Returns the improved primal bound.
 	 */
-	double getGlobalPrimalBound() {
-		return this.globalPrimalBound;
+	double getImprovedPrimalBound() {
+		return this.improvedPrimalBound;
 	}
 	
 	/**
-	 * Returns solution values of the incumbent.
+	 * Returns solution values of the potentially improved solution.
 	 */
-	double[] getIncumbentValues() {
-		return this.incumbentValues;
+	double[] getImprovedNominalSolutionValues() {
+		return this.improvedNominalVariablesSolutionValues;
 	}
+	
+	public void setMasterCallback(MasterCallback masterCallback) {
+		this.masterCallback = masterCallback;
+	}
+	
+	/**
+	 * Interface for the master callback that reports bounds from the subproblem to the master and asks for termination.
+	 * Is implemented by the master algorithm (@AlgBertsimasSimSequence or @AlgDivideAndConquer).
+	 */
+	protected interface MasterCallback {
 
-	
-	/**
-	 * Sets the global primal bound.
-	 */
-	void setGlobalPrimalBound(double globalPrimalBound) {
-		this.globalPrimalBound = globalPrimalBound;
+		boolean updateBoundsAndDecideTermination(double improvedPrimalBound, double primalBound, double dualBound);
+
+		boolean updatePrimalDualBounds(double improvedPrimalBound, double dualBound);
+		
 	}
 	
 	/**

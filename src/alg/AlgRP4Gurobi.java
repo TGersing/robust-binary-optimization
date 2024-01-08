@@ -42,7 +42,7 @@ public class AlgRP4Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 	/**
 	 * List of possible z for which omega is defined.
 	 */
-	List<PossibleZ> possibleZs;
+	private List<PossibleZ> possibleZs;
 
 	/**
 	 * Constructor storing the given robust problem and strategies.
@@ -67,18 +67,20 @@ public class AlgRP4Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 		reformulateModel();
 		
 		robustProblem.solve(getRemainingTime());
-		primalBound = robustProblem.getPrimalBound();
-		dualBound = robustProblem.getDualBound();
+		setPrimalBound(robustProblem.getPrimalBound());
+		setDualBound(robustProblem.getDualBound());
 		
-		//Stores best solution found
-		solution = new LinkedHashMap<Variable, Double>(robustProblem.getNominalVariables().length);
-		for (int i = 0; i < robustProblem.getNominalVariables().length; i++) {
-			double solutionValue = robustProblem.getNominalModelVariables()[i].get(GRB.DoubleAttr.LB);
-			for (int k = 0; k < possibleZs.size(); k++) {
-				solutionValue += omega[i][k].get(GRB.DoubleAttr.X);
+		//Stores best solution found, if available
+		try {
+			solution = new LinkedHashMap<Variable, Double>(robustProblem.getNominalVariables().length);
+			for (int i = 0; i < robustProblem.getNominalVariables().length; i++) {
+				double solutionValue = robustProblem.getNominalModelVariables()[i].get(GRB.DoubleAttr.LB);
+				for (int k = 0; k < possibleZs.size(); k++) {
+					solutionValue += omega[i][k].get(GRB.DoubleAttr.X);
+				}
+				solution.put(robustProblem.getNominalVariables()[i], solutionValue);
 			}
-			solution.put(robustProblem.getNominalVariables()[i], solutionValue);
-		}
+		} catch (Exception e) {	}
 	}
 
 	
@@ -105,6 +107,9 @@ public class AlgRP4Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 		GRBModel model = robustProblem.getModel();
 		Variable[] nominalVariables = robustProblem.getNominalVariables();
 		Variable[] uncertainVariables = robustProblem.getUncertainVariables();
+		
+		//We store the constraints of the nominal problem in an array.
+		GRBConstr[] constraints = model.getConstrs();
 
 		//Adds the variables z, p, lambda, and omega.
 		GRBVar z = model.addVar(0, Double.MAX_VALUE, robustProblem.getGamma(), GRB.CONTINUOUS, "z");
@@ -117,13 +122,6 @@ public class AlgRP4Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 			lambda[k] = model.addVar(0, Double.MAX_VALUE, 0, GRB.CONTINUOUS, "lambda"+k);
 		}
 		omega = new GRBVar[nominalVariables.length][possibleZs.size()];
-		
-		//To construct RP4, we have to alter the whole constraint matrix of the nominal problem.
-		//First, we map the variables of the imported model to an index such that we can quickly replace it in the constraints with its corresponding variable omega. 
-		HashMap<GRBVar, Integer> modelVariableToOmegaIndex = new HashMap<GRBVar, Integer>();
-		for (int i = 0; i < nominalVariables.length; i++) {
-			modelVariableToOmegaIndex.put(nominalVariables[i].getModelVariable(), i);
-		}
 		
 		//Formulation RP4 can only deal with variables where the lower bound is zero.
 		//If the imported problem contains variables not fulfilling this property then these have to be shifted.
@@ -198,15 +196,13 @@ public class AlgRP4Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 		//p[i] is at least the sum over all variables omega[i][k] multiplied by the maximum of zero and the deviation of i minus the corresponding deviation to k.
 		for (int i = 0; i < uncertainVariables.length; i++) {
 			Variable uncertainVariable = uncertainVariables[i];
-			GRBVar modelVariable = uncertainVariable.getModelVariable();
 			if (uncertainVariable.getDeviation() > 0) {
 				GRBLinExpr chooseP = new GRBLinExpr();
-				int omegaIndex = modelVariableToOmegaIndex.get(modelVariable);
 				if (uncertainVariable.getModelVariable().get(GRB.DoubleAttr.LB) != 0) {
 					double constant = 0;
 					for (int k = 0; k < possibleZs.size(); k++) {
 						if (uncertainVariable.getDeviation() > possibleZs.get(k).getValue()) {
-							chooseP.addTerm(uncertainVariable.getDeviation()-possibleZs.get(k).getValue(), omega[omegaIndex][k]);
+							chooseP.addTerm(uncertainVariable.getDeviation()-possibleZs.get(k).getValue(), omega[uncertainVariable.getNominalIndex()][k]);
 							constant += uncertainVariable.getModelVariable().get(GRB.DoubleAttr.LB)*(uncertainVariable.getDeviation()-possibleZs.get(k).getValue());
 						}
 						else {
@@ -218,7 +214,7 @@ public class AlgRP4Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 				else {
 					for (int k = 0; k < possibleZs.size(); k++) {
 						if (uncertainVariable.getDeviation() > possibleZs.get(k).getValue()) {
-							chooseP.addTerm(uncertainVariable.getDeviation()-possibleZs.get(k).getValue(), omega[omegaIndex][k]);
+							chooseP.addTerm(uncertainVariable.getDeviation()-possibleZs.get(k).getValue(), omega[uncertainVariable.getNominalIndex()][k]);
 						}
 						else {
 							break;
@@ -229,9 +225,13 @@ public class AlgRP4Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 			}
 		}
 		
-		//We store the constraints of the nominal problem in an array.
-		GRBConstr[] constraints = model.getConstrs();
-		
+		//To construct RP4, we have to alter the whole constraint matrix of the nominal problem.
+		//First, we map the variables of the imported model to an index such that we can quickly replace it in the constraints with its corresponding variable omega. 
+		HashMap<GRBVar, Integer> modelVariableToOmegaIndex = new HashMap<GRBVar, Integer>();
+		for (int i = 0; i < nominalVariables.length; i++) {
+			modelVariableToOmegaIndex.put(nominalVariables[i].getModelVariable(), i);
+		}
+				
 		//Replaces all constraints by one counterpart for every lambda. The original variables are replaced by their corresponding omega variables.
 		for (GRBConstr constraint : constraints) {
 			//Count the constant term implied by the shifted variables.
@@ -259,14 +259,15 @@ public class AlgRP4Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 			
 			//Add the new constraints to the problem.
 			for (int k = 0; k < possibleZs.size(); k++) {
+				GRBLinExpr rhsExpr = new GRBLinExpr();
+				rhsExpr.addTerm(constraint.get(GRB.DoubleAttr.RHS)-constant, lambda[k]);
 				if (constraint.get(GRB.CharAttr.Sense) == GRB.LESS_EQUAL) {
-					GRBLinExpr rhsExpr = new GRBLinExpr();
-					rhsExpr.addTerm(constraint.get(GRB.DoubleAttr.RHS)-constant, lambda[k]);
 					model.addConstr(expressions[k], GRB.LESS_EQUAL, rhsExpr, "");
 				}
+				else if (constraint.get(GRB.CharAttr.Sense) == GRB.EQUAL) {
+					model.addConstr(expressions[k], GRB.EQUAL, rhsExpr, "");
+				}
 				else {
-					GRBLinExpr rhsExpr = new GRBLinExpr();
-					rhsExpr.addTerm(constraint.get(GRB.DoubleAttr.RHS)-constant, lambda[k]);
 					model.addConstr(expressions[k], GRB.GREATER_EQUAL, rhsExpr, "");
 				}
 			}
@@ -287,7 +288,8 @@ public class AlgRP4Gurobi extends AbstractAlgorithm implements RobustAlgorithm{
 		protected void callback() {
 			if (where == GRB.CB_MIP) {
 				try {
-					primalDualIntegral.update(getDoubleInfo(GRB.CB_MIP_OBJBST), getDoubleInfo(GRB.CB_MIP_OBJBND), false);
+					setPrimalBound(getDoubleInfo(GRB.CB_MIP_OBJBST));
+					setDualBound(getDoubleInfo(GRB.CB_MIP_OBJBND));
 				} catch (GRBException e) {}
 			}
 		}

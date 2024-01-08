@@ -24,11 +24,6 @@ import util.Variable;
  */
 class RobustProblemGurobi extends ProblemGurobi {
 	/**
-	 * Path to the file stating the robustness components of the problem.
-	 */
-	protected String robustPath;
-
-	/**
 	 * The robustness budget.
 	 */
 	protected double Gamma;
@@ -39,7 +34,7 @@ class RobustProblemGurobi extends ProblemGurobi {
 	protected Variable[] uncertainVariables;
 
 	/**
-	 * An array containing the uncertain variables of the model.
+	 * An array containing the uncertain GRBVars.
 	 */
 	protected GRBVar[] uncertainModelVariables;
 
@@ -58,8 +53,6 @@ class RobustProblemGurobi extends ProblemGurobi {
 	 */
 	RobustProblemGurobi(String problemPath, String robustPath, AlgorithmParameters algorithmParameters) throws GRBException, IOException {
 		super(problemPath, algorithmParameters);
-		
-		this.robustPath = robustPath;
 		
 		Map<String, Variable> nameToVariable = new HashMap<String, Variable>();
 		for (Variable variable : nominalVariables) {
@@ -119,13 +112,6 @@ class RobustProblemGurobi extends ProblemGurobi {
 		try {
 			uncertainVariablesSolutionValues = model.get(GRB.DoubleAttr.X, uncertainModelVariables);
 		} catch (GRBException e) { }
-	}
-	
-	/**
-	 * Returns the path to the imported robustness components of the problem.
-	 */
-	String getRobustPath() {
-		return robustPath;
 	}
 	
 	/**

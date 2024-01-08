@@ -6,8 +6,9 @@ import java.util.List;
 import java.util.Optional;
 
 import alg.AbstractAlgorithm.AlgorithmParameters;
+import alg.AlgBranchAndBound.BnBCallbackIntegerSubproblems;
 import alg.SubproblemBoundedGurobi.BoundingSubproblemsStrategies.BoundingTerminationStrategy;
-import alg.SubproblemBoundedGurobi.BoundingSubproblemsStrategies.BoundingLPOptimalityCutsStrategy;
+import alg.SubproblemBoundedGurobi.BoundingSubproblemsStrategies.BoundingLPWarmStartStrategy;
 import alg.SubproblemGurobi.SubproblemsStrategies.ImprovingZStrategy;
 import gurobi.GRB;
 import gurobi.GRBCallback;
@@ -16,12 +17,13 @@ import gurobi.GRBException;
 import gurobi.GRBLinExpr;
 import gurobi.GRBVar;
 import util.BnBNode;
+import util.CliquePartitioning;
 import util.PossibleZ;
 import util.Variable;
 import util.Variable.Type;
 
 /**
- * This class implements the integer and relaxed robust subproblems solved during the branch and bound algorithm.
+ * This class implements the integer and relaxed robust subproblems solved during @AlgBranchAndBound.
  * 
  * @author Timo Gersing
  */
@@ -37,33 +39,91 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	private PossibleZ upperBoundZ;
 	
 	/**
-	 * The substituted variables p from the reformulation.
+	 * Contains the robustness constraints using the lower bound for each uncertain variable or clique.
 	 */
-	private GRBVar[] pPrime;
+	private GRBConstr[] robustnessConstraintsLowerBound;
 	
 	/**
-	 * The substituted variable z from the (clique) reformulation.
+	 * Contains the robustness constraints using the upper bound for each uncertain variable or clique.
 	 */
-	private GRBVar zPrime;
+	private GRBConstr[] robustnessConstraintsUpperBound;
 	
 	/**
-	 * The value of the (resubstituted) variable z.
+	 * Objects representing constraints whose slack were non-basic in the parent model.
+	 * Used to add the same constraints to the current model.
 	 */
-	private Double zSolutionValue;
+	private List<NonBasicSlackConstraint> parentNonBasicSlackConstraints = new ArrayList<NonBasicSlackConstraint>();
 	
 	/**
-	 * The global primal bound obtained from a prior subproblem, the solution to this subproblem or an improved solution.
+	 * The List of GRBConstr added to the model to include non-basic slack constraints from the parent model.
 	 */
-	private double globalPrimalBound = AbstractAlgorithm.DEFAULT_PRIMAL_BOUND;
+	private List<GRBConstr> parentNonBasicSlackGRBConstraints = new ArrayList<GRBConstr>();
+	
 	/**
-	 * The value of z for the improved solution.
+	 * Indicates whether an uncertain variable cannot be used for substituting p using the current bound.
+	 * Not possible for all, as they need to remain unchanged for warm starting.
 	 */
-	private Double improvedZ = null;
+	private boolean[] isIndexNonSubstitutable;
+	
+	/**
+	* Upper bounds with which the p variables have been substituted.
+	* Can vary for different variables, as some need to be unchanged for warm starting.
+	*/
+	private double[] upperBoundsUsedForSubstituting;
+
+	/**
+	 * Constraints of the nominal problem that need to be stored such that we can report whether they are basic or not.
+	 */
+	private GRBConstr[] nominalConstrs;
+
+	/**
+	 * The variables p from the (clique) reformulation.
+	 */
+	private GRBVar[] p;
+	
+	/**
+	 * The variable z from the (clique) reformulation.
+	 */
+	private GRBVar z;
+	
+	/**
+	 * The value of the variable z.
+	 * Only available if z is part of the model and was not omitted by Lagrange relaxation
+	 */
+	private Optional<Double> zSolutionValue;
+	
+	/**
+	 * The values of the p variables in the computed solution (after resubstituting).
+	 * Only available if p is part of the model and was not omitted by Lagrange relaxation
+	 */
+	private double[] pSolutionValues;
+	
+	/**
+	 * The value of the variable z for the improved solution.
+	 */
+	private Optional<Double> improvedZ;
+	
+	/**
+	 * The primal bound provided by a potentially improved solution.
+	 */
+	private double improvedPrimalBound = AbstractAlgorithm.DEFAULT_PRIMAL_BOUND;
+	
 	/**
 	 * Values of variables in a new incumbent. Needs to be stored because an improved sub-optimal solution
 	 * might be better than the optimal solution of the subproblem. 
 	 */
-	private double[] incumbentValues;
+	private double[] improvedNominalVariablesSolutionValues;
+	
+	/**
+	 * Decides whether we solve the LP relaxation with robustness constraints added or not.
+	 * If the constraints are omitted, solving the LP is much faster but yields a worse dual bound.
+	 */
+	private boolean applyLagrangeRelaxation;
+	
+	/**
+	 * The Lagrange multiplier used for the relaxation.
+	 */
+	double lagrangeMultipier;
 	
 	/**
 	 * Specifies strategies.
@@ -71,23 +131,42 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	private BoundingSubproblemsStrategies boundingStrategies;
 	
 	/**
+	 * Callback passed to the integer subproblem.
+	 * Reports bounds from the integer subproblem to the master and asks for termination.
+	 */
+	private BnBCallbackIntegerSubproblems bnbCallback;
+	
+	/**
+	 * States whether variables are currently continuous or integer.
+	 */
+	private boolean continuous = false;
+	
+	/**
 	 * Constructor receiving paths to problem files as well as parameters and strategies.
 	 */
-	SubproblemBoundedGurobi(String problemPath, String robustPath, AlgorithmParameters algorithmParameters, BoundingSubproblemsStrategies boundingStrategies) throws IOException, GRBException {
+	protected SubproblemBoundedGurobi(String problemPath, String robustPath, AlgorithmParameters algorithmParameters, BoundingSubproblemsStrategies boundingStrategies) throws IOException, GRBException {
 		super(problemPath, robustPath, algorithmParameters);
-		
 		this.boundingStrategies = boundingStrategies;
-		
-		zPrime = model.addVar(0, Double.MAX_VALUE, Gamma, GRB.CONTINUOUS, "z");
-		
-		if (cliquePartitioning != null) {
-			pPrime = new GRBVar[cliquePartitioning.getCliques().size()];
-		}
-		else {
-			pPrime = new GRBVar[uncertainVariables.length];
-		}
-		for (int i = 0; i < pPrime.length; i++) {
-			pPrime[i] = model.addVar(0, Double.MAX_VALUE, 1, GRB.CONTINUOUS, "p"+i);
+	}
+	
+	/**
+	 * Sets the clique partitioning and adds merged clique constraints to the nominal constraints.
+	 */
+	@Override
+	void setCliquePartitioning(CliquePartitioning cliquePartitioning) {
+		this.cliquePartitioning = cliquePartitioning;
+		try {
+			for (int index : cliquePartitioning.getMergedCliqueIndices()) {
+				List<Integer> clique = cliquePartitioning.getCliques().get(index);
+				GRBLinExpr cliqueExpr = new GRBLinExpr();
+				for (Integer varIndex : clique) {
+					cliqueExpr.addTerm(1, uncertainModelVariables[varIndex]);
+				}
+					model.addConstr(cliqueExpr, GRB.LESS_EQUAL, 1, "MergedCliqueConstraint"+index);
+			}
+			model.update();
+		} catch (GRBException e) {
+			e.printStackTrace();
 		}
 	}
 	
@@ -97,22 +176,104 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	@Override
 	protected void resetProblem() throws GRBException {
 		super.resetProblem();
-		zSolutionValue = null;
-		improvedZ = null;
+		zSolutionValue = Optional.empty();
+		improvedZ = Optional.empty();
+		pSolutionValues = null;
 	}
 	
 	/**
 	 * Solves the linear relaxation of the subproblem.
 	 */
-	void solveRelaxed(Optional<Double> timeLimit) throws IOException, GRBException  {
-		//Sets alls variables to continuous
-		for (GRBVar grbVar : nominalModelVariables) {
-			grbVar.set(GRB.CharAttr.VType, GRB.CONTINUOUS);
+	void solveRelaxed(Optional<Double> timeLimit, BnBNode node) throws IOException, GRBException {
+		//Sets all variables to continuous
+		if (!continuous) {
+			for (GRBVar grbVar : nominalModelVariables) {
+				grbVar.set(GRB.CharAttr.VType, GRB.CONTINUOUS);
+			}
+			//Removes callback.
+			model.setCallback(null);
+			continuous = true;
 		}
-		//Removes callback.
-		model.setCallback(null);
+		
+		//Warm starts the LP if the option is chosen
+		if (boundingStrategies.warmStartStrategy == BoundingLPWarmStartStrategy.WARMSTART_ENABLE) {
+			//Checks whether there exists a basis from which we can start
+			if (node.getParentVBasisNominal() != null) {
+				//Sets basis for nominal variables and slack variables
+				model.set(GRB.IntAttr.VBasis, nominalModelVariables, node.getParentVBasisNominal());
+				model.set(GRB.IntAttr.CBasis, nominalConstrs, node.getParentCBasisNominal());
+				
+
+				//All new constraints that were not in the parent model are set to basic.
+				//This ensures that a basis remains a basis.
+				for (GRBConstr tempConstr : temporaryConstraints) {
+					tempConstr.set(GRB.IntAttr.CBasis, 0);
+				}
+
+				//If slacks of constraints were non-basic in the parent model, then we set them here also to non-basic.
+				//This ensures that a basis remains a basis.
+				for (GRBConstr parentConstr : parentNonBasicSlackGRBConstraints) {
+					parentConstr.set(GRB.IntAttr.CBasis, -1);
+				}
+				
+				if (applyLagrangeRelaxation) {
+					//If they were previously added to the model (now not contributing to constraints or objective), 
+					//set p and z to non-basic such that we obtain a primal basis.
+					if (z != null) {
+						z.set(GRB.IntAttr.VBasis, -1);
+						for (int i = 0; i < p.length; i++) {
+							p[i].set(GRB.IntAttr.VBasis, -1);
+						}
+					}
+					
+					//As this is a primal feasible basis if we apply lagrange (in case we don't use optimality-cuts), we choose the primal simplex 
+					if (algorithmParameters.getNumberThreads().isPresent()) {
+						if (algorithmParameters.getNumberThreads().get() <= 1) {
+							//Primal simplex
+							model.set(GRB.IntParam.Method, 0);
+						}
+						else if (algorithmParameters.getNumberThreads().get() <= 2) {
+							//Concurrent Simplex
+							model.set(GRB.IntParam.Method, 5);
+						}
+					}
+				}
+				//If lagrange relaxation is not applied, we need to set values for p, z, and the robustness constraints
+				else {
+					//If robustness constraints were already part of the previous model, then we construct a dual feasible basis
+					if (node.getParentVBasisZ() != null) {
+						//p and z are set as before
+						z.set(GRB.IntAttr.VBasis, node.getParentVBasisZ());
+						for (int i = 0; i < p.length; i++) {
+							p[i].set(GRB.IntAttr.VBasis, node.getParentVBasisP()[i]);
+						}
+					}
+					//Otherwise, we construct a basis
+					else {
+						//We set z to non-basic
+						z.set(GRB.IntAttr.VBasis, -1);
+						for (int i = 0; i < p.length; i++) {
+							//There will at most be one robustness constraint in the model
+							//We set the slack variable to non-basic and p basic
+							if (robustnessConstraintsLowerBound[i] != null) {
+								p[i].set(GRB.IntAttr.VBasis, 0);
+								robustnessConstraintsLowerBound[i].set(GRB.IntAttr.CBasis, -1);
+							}
+							//If no constraint is in the model, we set p to non-basic
+							else {
+								p[i].set(GRB.IntAttr.VBasis, -1);
+							}
+						}
+
+					}
+				}
+			}
+		}
 		
 		this.solve(timeLimit);
+		
+		//Sets LP solve method to default
+		model.set(GRB.IntParam.Method, -1);
 		
 		//Writes information to the node log.
 		String output = "\n##### Finished LP"
@@ -121,23 +282,205 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	}
 	
 	/**
+	 * Returns an integer array showing which nominal variable are basic in the computed solution.
+	 */
+	protected int[] getVBasisNominal () {
+		try {
+			return model.get(GRB.IntAttr.VBasis, nominalModelVariables);
+		} catch (GRBException e) {
+			return null;
+		}
+
+	}
+	
+	/**
+	 * Returns an integer array showing which p variable are basic in the computed solution.
+	 */
+	protected int[] getVBasisP () {
+		try {
+			if (p == null) {
+				return null;
+			}
+			else {
+				return model.get(GRB.IntAttr.VBasis, p);
+			}
+		} catch (GRBException e) {
+			return null;
+		}
+
+	}
+	
+	/**
+	 * Returns an integer showing whether z is basic in the computed solution.
+	 */
+	protected Integer getVBasisZ () {
+		try {
+			if (z == null) {
+				return null;
+			}
+			else {
+				return z.get(GRB.IntAttr.VBasis);
+			}
+		} catch (GRBException e) {
+			return null;
+		}
+
+	}
+	
+	/**
+	 * Returns an integer array showing which slack variables of nominal constraints
+	 * are basic in the computed solution.
+	 */
+	protected int[] getCBasisNominal () {
+		try {
+			return model.get(GRB.IntAttr.CBasis, nominalConstrs);
+		} catch (GRBException e) {
+			return null;
+		}
+
+	}
+	
+	/**
+	* Returns the upper bounds with which the p variables have been substituted.
+	* Can vary for different variables, as some need to be unchanged for warm starting.
+	*/
+	public double[] getUpperBoundsUsedForSubstituting() {
+		return upperBoundsUsedForSubstituting;
+	}
+	
+	/**
+	 * Returns objects representing constraints whose slack variables are non-basic in the current solution.
+	 */
+	protected List<NonBasicSlackConstraint> getNonBasicSlackConstraints () {
+		try {
+			List<NonBasicSlackConstraint> nonBasicSlackConstraints = new ArrayList<>();
+			if (robustnessConstraintsLowerBound != null) {
+				for (int i = 0; i < robustnessConstraintsLowerBound.length; i++) {
+					GRBConstr lbConstr = robustnessConstraintsLowerBound[i];
+					if (lbConstr != null && lbConstr.get(GRB.IntAttr.CBasis) == -1) {
+						nonBasicSlackConstraints.add(new NonBasicSlackConstraint(lbConstr, "lb", Optional.of(lowerBoundZ.getValue()), Optional.of(i)));
+					}
+					GRBConstr ubConstr = robustnessConstraintsUpperBound[i];
+					if (ubConstr != null && ubConstr.get(GRB.IntAttr.CBasis) == -1) {
+						nonBasicSlackConstraints.add(new NonBasicSlackConstraint(ubConstr, "ub", Optional.of(upperBoundZ.getValue()), Optional.of(i)));
+					}
+				}
+			}
+
+			if (parentNonBasicSlackConstraints != null) {
+				for (int i = 0; i < parentNonBasicSlackConstraints.size(); i++) {
+					if (parentNonBasicSlackGRBConstraints.get(i).get(GRB.IntAttr.CBasis) == -1) {
+						nonBasicSlackConstraints.add(parentNonBasicSlackConstraints.get(i));
+					}
+				}
+			}
+			
+			if (optimalityCuts != null) {
+				for (GRBConstr optimalityCut : optimalityCuts) {
+					if (optimalityCut.get(GRB.IntAttr.CBasis) == -1) {
+						nonBasicSlackConstraints.add(new NonBasicSlackConstraint(optimalityCut));
+					}
+				}
+			}
+			
+			return nonBasicSlackConstraints;
+		} catch (GRBException e) {
+			e.printStackTrace();
+			return null;
+		}
+	}
+	
+	/**
+	 * Objects representing constraints whose slack are non-basic in the current solution.
+	 * Can be used to add the constraint again into a child model.
+	 * If this constraint contains a p variable, then this object holds this information.
+	 * Important for verifying whether p can be substituted.
+	 * 
+	 * Also stores the typ of the constraint and the used bound if it is a robustness constraint.
+	 * Important for not adding the same constraint twice in the child problem.
+	 */
+	public class NonBasicSlackConstraint {
+		
+		private GRBLinExpr lhsExpr;
+		private char sense;
+		private double rhs;
+		private boolean isLowerBoundConstraint = false;
+		private boolean isUpperBoundConstraint = false;
+		private Optional<Double> bound = Optional.empty();
+		private Optional<Integer> correspondingPIndex = Optional.empty();
+		
+		/**
+		 * Constructor for optimality cuts
+		 */
+		NonBasicSlackConstraint(GRBConstr constr) throws GRBException {
+			this.lhsExpr = model.getRow(constr);
+			this.sense = constr.get(GRB.CharAttr.Sense);
+			this.rhs = constr.get(GRB.DoubleAttr.RHS);
+		}
+		
+		/**
+		 * Constructor for robustness constraints
+		 */
+		NonBasicSlackConstraint(GRBConstr constr, String lbOrUB, Optional<Double> bound, Optional<Integer> correspondingPIndex) throws GRBException {
+			this.lhsExpr = model.getRow(constr);
+			this.sense = constr.get(GRB.CharAttr.Sense);
+			this.rhs = constr.get(GRB.DoubleAttr.RHS);
+			if (lbOrUB.toLowerCase().equals("lb")) {
+				isLowerBoundConstraint = true;
+			}
+			if (lbOrUB.toLowerCase().equals("ub")) {
+				isUpperBoundConstraint = true;
+			}
+			this.bound = bound;
+			this.correspondingPIndex = correspondingPIndex;
+		}
+		
+		public GRBLinExpr getLhsExpr() {
+			return lhsExpr;
+		}
+		public char getSense() {
+			return sense;
+		}
+		public double getRhs() {
+			return rhs;
+		}
+		public boolean isLowerBoundConstraint() {
+			return isLowerBoundConstraint;
+		}
+		public boolean isUpperBoundConstraint() {
+			return isUpperBoundConstraint;
+		}
+		public Optional<Double> getBound() {
+			return bound;
+		}
+		public Optional<Integer> getCorrespondingPIndex() {
+			return correspondingPIndex;
+		}
+	}
+	
+	/**
 	 * Solves the integer subproblem.
 	 */
-	void solveInteger(Optional<Double> timeLimit) throws IOException, GRBException  {
+	void solveInteger(Optional<Double> timeLimit, BnBCallbackIntegerSubproblems bnbCallback) throws IOException, GRBException  {
+		this.bnbCallback = bnbCallback;
+		
 		//Sets variables to their original type
-		for (Variable var : nominalVariables) {
-			if (var.getType() == Type.BINARY) {
-				var.getModelVariable().set(GRB.CharAttr.VType, GRB.BINARY);
+		if (continuous) {
+			for (Variable var : nominalVariables) {
+				if (var.getType() == Type.BINARY) {
+					var.getModelVariable().set(GRB.CharAttr.VType, GRB.BINARY);
+				}
+				else if (var.getType() == Type.INTEGER) {
+					var.getModelVariable().set(GRB.CharAttr.VType, GRB.INTEGER);
+				}
+				else if (var.getType() == Type.CONTINUOUS) {
+					var.getModelVariable().set(GRB.CharAttr.VType, GRB.CONTINUOUS);
+				}
 			}
-			else if (var.getType() == Type.INTEGER) {
-				var.getModelVariable().set(GRB.CharAttr.VType, GRB.INTEGER);
-			}
-			else if (var.getType() == Type.CONTINUOUS) {
-				var.getModelVariable().set(GRB.CharAttr.VType, GRB.CONTINUOUS);
-			}
+			//Adds callback
+			model.setCallback(new Callback());
+			continuous = false;
 		}
-		//Adds callback
-		model.setCallback(new Callback());
 		
 		this.solve(timeLimit);
 		
@@ -147,85 +490,290 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 				+ "Dual Bound: "+dualBound;
 		AbstractAlgorithm.writeOutput(output, algorithmParameters);
 		
-		//Updates global primal bound
-		try {
-			if (primalBound < globalPrimalBound) {
-				globalPrimalBound = primalBound;
-				incumbentValues = model.get(GRB.DoubleAttr.X, nominalModelVariables);
-			}
-		} catch (GRBException e) { }
+		//Updates the improved primal bound if necessary
+		if (primalBound < improvedPrimalBound) {
+			improvedPrimalBound = primalBound;
+			try {
+				improvedNominalVariablesSolutionValues = model.get(GRB.DoubleAttr.X, nominalModelVariables);
+			} catch (GRBException e) { }
+		}
+		bnbCallback.updatePrimalDualBounds(improvedPrimalBound, dualBound);
 	}
 	
 	/**
 	 * Updates bounds on z and the reformulation for a given node of the branching tree.
 	 */
-	void updateBounds(BnBNode node) throws GRBException, IOException {
-		//Updates bounds
-		this.lowerBoundZ=node.getLowerBoundZ();
-		this.upperBoundZ=node.getUpperBoundZ();
+	void updateBoundsAndFormulation(BnBNode node) throws GRBException, IOException {
+		if (nominalConstrs == null) {
+			nominalConstrs = model.getConstrs();
+		}
 		
 		//Removes all temporary constraints added for the previous subproblem
 		for (GRBConstr grbConstr : temporaryConstraints) {
 			model.remove(grbConstr);
 		}
+		//Clears the list of temporary constraints and non-basic slack constraints from the parent model
 		temporaryConstraints = new ArrayList<GRBConstr>();
+		optimalityCuts = new ArrayList<GRBConstr>();
+		parentNonBasicSlackGRBConstraints = new ArrayList<GRBConstr>();
+		
+		//Gets the non-basic slack constraints from the parent model
+		parentNonBasicSlackConstraints = node.getParentNonBasicSlackConstraints();
+		
+		//Stores whether we apply Lagrange relaxation.
+		applyLagrangeRelaxation = node.isApplyLagrangeRelaxation();
+		
+		//In case we do not apply lagrange relaxation and the robustness vars are not yet added, we do add them to the model
+		if (!applyLagrangeRelaxation && z == null) {
+			z = model.addVar(0, Double.MAX_VALUE, Gamma, GRB.CONTINUOUS, "z");
+			
+			if (cliquePartitioning != null) {
+				p = new GRBVar[cliquePartitioning.getCliques().size()];
+			}
+			else {
+				p = new GRBVar[uncertainVariables.length];
+			}
+			for (int i = 0; i < p.length; i++) {
+				p[i] = model.addVar(0, Double.MAX_VALUE, 1, GRB.CONTINUOUS, "p"+i);
+			}
+		}
+		
+		//Updates bounds
+		this.lowerBoundZ=node.getLowerBoundZ();
+		this.upperBoundZ=node.getUpperBoundZ();
+		
+		//Sets bounds for z
+		if (!applyLagrangeRelaxation) {
+			z.set(GRB.DoubleAttr.LB, lowerBoundZ.getValue());
+			z.set(GRB.DoubleAttr.UB, upperBoundZ.getValue());
+		}
+		
+		//Indicates whether a lower/upper bound constraint with the same bound is already inherited from the parent problem.
+		//In this case, we don't have to add it again.
+		boolean[] isLowerBoundConstraintAlreadyAdded = null;
+		boolean[] isUpperBoundConstraintAlreadyAdded = null;
+		if (p != null) {
+			isLowerBoundConstraintAlreadyAdded = new boolean[p.length];
+			isUpperBoundConstraintAlreadyAdded = new boolean[p.length];
+		}
+		//Adds constraints whose slack were non-basic in the parent model
+		//Only relevant if we don't solve integer and do warm start.
+		if (!node.isSolveInteger()
+				&& boundingStrategies.warmStartStrategy == BoundingLPWarmStartStrategy.WARMSTART_ENABLE
+				&& parentNonBasicSlackConstraints != null) {
+			for (int j = 0; j < parentNonBasicSlackConstraints.size(); j++) {
+				NonBasicSlackConstraint parentNonBasicSlackConstraint = node.getParentNonBasicSlackConstraints().get(j);
+				GRBConstr constr = model.addConstr(parentNonBasicSlackConstraint.getLhsExpr(), 
+						parentNonBasicSlackConstraint.getSense(),
+						parentNonBasicSlackConstraint.getRhs(), "");
+				parentNonBasicSlackGRBConstraints.add(constr);
+				temporaryConstraints.add(constr);
+				
+				//A robustness constraint is already added, if it is with respect to the same bound
+				if (parentNonBasicSlackConstraint.isLowerBoundConstraint()
+						&& parentNonBasicSlackConstraint.getBound().get() == lowerBoundZ.getValue()) {
+					isLowerBoundConstraintAlreadyAdded[parentNonBasicSlackConstraint.getCorrespondingPIndex().get()] = true;
+				}
+				else if (parentNonBasicSlackConstraint.isUpperBoundConstraint()
+						&& parentNonBasicSlackConstraint.getBound().get() == upperBoundZ.getValue()) {
+					isUpperBoundConstraintAlreadyAdded[parentNonBasicSlackConstraint.getCorrespondingPIndex().get()] = true;
+				}
+			}
+		}
+		
+		//Indices of uncertain variables that cannot be used for substituting p with the current upper bound,
+		//as they are basic themselves or part of a non-basic slack constraint in the previous model.
+		//Only relevant if we don't solve integer, do warm start, did not consider lagrange for the parent model.
+		//If the latter case does not apply, then we are not given upper bounds for substituting in the parent model.
+		isIndexNonSubstitutable = new boolean[uncertainVariables.length];
+		if (!node.isSolveInteger()
+				&& boundingStrategies.warmStartStrategy == BoundingLPWarmStartStrategy.WARMSTART_ENABLE
+				&& node.getParentVBasisNominal() != null
+				&& node.getParentUpperBoundsUsedForSubstituting() != null) {
+			//Sets the uncertain variables within non-basic slack constraints to non-substitutable
+			for (int j = 0; j < parentNonBasicSlackConstraints.size(); j++) {
+				NonBasicSlackConstraint parentNonBasicSlackConstraints = node.getParentNonBasicSlackConstraints().get(j);
+				if (parentNonBasicSlackConstraints.correspondingPIndex.isPresent()) {
+					if (cliquePartitioning != null) {
+						for (Integer varIndex : cliquePartitioning.getCliques().get(parentNonBasicSlackConstraints.correspondingPIndex.get())) {
+							isIndexNonSubstitutable[varIndex] = true;
+						}
+					}
+					else {
+						isIndexNonSubstitutable[parentNonBasicSlackConstraints.correspondingPIndex.get()] = true;
+					}
+				}
+			}
+			
+			//Adds all basic x variables.
+			for (int i = 0; i < uncertainVariables.length; i++) {
+				if (node.getParentVBasisNominal()[uncertainVariables[i].getNominalIndex()] != -1) {
+					isIndexNonSubstitutable[i] = true;
+				}
+			}
+		}
 		
 		//Alters the objective function.
 		GRBLinExpr objLinExpr = new GRBLinExpr();
+		//Adds nominal objective coeffs
 		for (Variable nominalVariable : nominalVariables) {
 			objLinExpr.addTerm(nominalVariable.getObjectiveCoefficient(), nominalVariable.getModelVariable());
 		}
-		for (Variable uncertainVariable : uncertainVariables) {
-			if (uncertainVariable.getDeviation() > upperBoundZ.getValue()) {
-				objLinExpr.addTerm(uncertainVariable.getDeviation() - upperBoundZ.getValue(), uncertainVariable.getModelVariable());
+		
+		//Adds the constant obtained from the lower bound if we apply Lagrange relaxation
+		if (applyLagrangeRelaxation) {
+			objLinExpr.addConstant(Gamma*lowerBoundZ.getValue());
+		}
+		//Adds the terms obtained from the upper bound on z for substitution
+		upperBoundsUsedForSubstituting = new double[uncertainVariables.length];
+		for (int i = 0; i < uncertainVariables.length; i++) {
+			Variable uncertainVariable = uncertainVariables[i];
+			//If the variable can be substituted, we use the current upper bound 
+			if (!isIndexNonSubstitutable[i]) {
+				upperBoundsUsedForSubstituting[i] = upperBoundZ.getValue();
+			}
+			//Otherwise, we take the last upper bound that has been used for substituting this variable
+			else {
+				upperBoundsUsedForSubstituting[i] = node.getParentUpperBoundsUsedForSubstituting()[i];
+			}
+			if (uncertainVariable.getDeviation() > upperBoundsUsedForSubstituting[i]) {
+				objLinExpr.addTerm(uncertainVariable.getDeviation() - upperBoundsUsedForSubstituting[i], uncertainVariable.getModelVariable());
 			}
 		}
-		for (int i = 0; i < pPrime.length; i++) {
-			objLinExpr.addTerm(1, pPrime[i]);
+		
+		//Adds p and z to the objective in case we do not apply Lagrange relaxation
+		if (!applyLagrangeRelaxation) {
+			for (int i = 0; i < p.length; i++) {
+				objLinExpr.addTerm(1, p[i]);
+			}
+			objLinExpr.addTerm(Gamma, z);
 		}
-		objLinExpr.addTerm(Gamma, zPrime);
-		objLinExpr.addConstant(Gamma*lowerBoundZ.getValue());
+		//Otherwise applies Lagrange relaxation to the robustness constraints
+		else {
+			//Counts the number of robustness constraints that would be in the model
+			int constraintCount = 0;
+			if (cliquePartitioning != null) {
+				for (List<Integer> clique : cliquePartitioning.getCliques()) {
+					for (int varIndex : clique) {
+						if (uncertainVariables[varIndex].getDeviation() > lowerBoundZ.getValue()) {
+							constraintCount++;
+							break;
+						}
+					}
+				}
+			}
+			else {
+				for (Variable uncertainVariable : uncertainVariables) {
+					if (uncertainVariable.getDeviation() > lowerBoundZ.getValue()){
+						constraintCount++;
+					}
+				}
+			}
+			//Relaxes each constraint with Lagrange multiplier = Gamma/constraintCount
+			lagrangeMultipier = Math.min(1, 1.0*Gamma/constraintCount);
+			for (Variable uncertainVariable : uncertainVariables) {
+				if (uncertainVariable.getDeviation() > lowerBoundZ.getValue()) {
+					objLinExpr.addTerm(lagrangeMultipier*(Math.min(uncertainVariable.getDeviation(), upperBoundZ.getValue())-lowerBoundZ.getValue()), uncertainVariable.getModelVariable());
+				}
+			}
+		}
 		model.setObjective(objLinExpr);
 		
 		//Adds the constraints from the (clique) reformulation
-		if (cliquePartitioning != null) {
-			for (int i = 0; i < cliquePartitioning.getCliques().size(); i++) {
-				//We only add a constraint if at least one of the deviations - lower bound on z is larger
-				//than the feasibility tolerance. Otherwise, adding the constraint is probably insatisfied 
-				//anyway and may cause numerical problems.
-				boolean addConstraint = false;
-				for (int varIndex : cliquePartitioning.getCliques().get(i)) {
-					if (uncertainVariables[varIndex].getDeviation() - lowerBoundZ.getValue() > algorithmParameters.getFeasibilityTolerance()) {
-						addConstraint = true;
-						break;
-					}
-				}
-				if (addConstraint) {
-					GRBLinExpr robustnessExpr = new GRBLinExpr();
-					robustnessExpr.addTerm(1, pPrime[i]);
-					robustnessExpr.addTerm(1, zPrime);
-					for (int varIndex : cliquePartitioning.getCliques().get(i)) {
-						Variable var = uncertainVariables[varIndex];
-						if (var.getDeviation() > lowerBoundZ.getValue()) {
-							robustnessExpr.addTerm(-(Math.min(var.getDeviation(), upperBoundZ.getValue())-lowerBoundZ.getValue()), var.getModelVariable());
+		if (!applyLagrangeRelaxation) {
+			if (cliquePartitioning != null) {
+				robustnessConstraintsLowerBound = new GRBConstr[cliquePartitioning.getCliques().size()];
+				robustnessConstraintsUpperBound = new GRBConstr[cliquePartitioning.getCliques().size()];
+				for (int i = 0; i < cliquePartitioning.getCliques().size(); i++) {
+					//Only adds the constraint if it is not already inherited from the parent problem
+					if (!isLowerBoundConstraintAlreadyAdded[i]) {
+						//Tests whether the lower bound constraint should be added
+						//We only add constraints if they contain a deviation that is above the lower bound
+						boolean addConstraint = false;
+						for (int varIndex : cliquePartitioning.getCliques().get(i)) {
+							if (Math.min(uncertainVariables[varIndex].getDeviation(), upperBoundsUsedForSubstituting[varIndex]) - lowerBoundZ.getValue() > algorithmParameters.getFeasibilityTolerance()) {
+								addConstraint = true;
+								break;
+							}
+						}
+						//Adds the lower bound constraint
+						if (addConstraint) {
+							GRBLinExpr robustnessExprLowerBound = new GRBLinExpr();
+							robustnessExprLowerBound.addTerm(1, p[i]);
+							robustnessExprLowerBound.addTerm(1, z);
+							for (int varIndex : cliquePartitioning.getCliques().get(i)) {
+								Variable var = uncertainVariables[varIndex];
+								if (Math.min(var.getDeviation(), upperBoundsUsedForSubstituting[varIndex]) > lowerBoundZ.getValue()) {
+									robustnessExprLowerBound.addTerm(-(Math.min(var.getDeviation(), upperBoundsUsedForSubstituting[varIndex])-lowerBoundZ.getValue()), var.getModelVariable());
+								}
+							}
+							GRBConstr constrLowerBound = model.addConstr(robustnessExprLowerBound, GRB.GREATER_EQUAL, lowerBoundZ.getValue(), "");
+							robustnessConstraintsLowerBound[i] = constrLowerBound;
+							temporaryConstraints.add(constrLowerBound);
 						}
 					}
-					temporaryConstraints.add(model.addConstr(robustnessExpr, GRB.GREATER_EQUAL, 0, ""));
+					//Only adds the constraint if it is not already inherited from the parent problem
+					if (!isUpperBoundConstraintAlreadyAdded[i]) {
+						//Tests whether the upper bound constraint should be added
+						boolean addConstraint = false;
+						for (int varIndex : cliquePartitioning.getCliques().get(i)) {
+							if (Math.min(uncertainVariables[varIndex].getDeviation(), upperBoundsUsedForSubstituting[varIndex]) - upperBoundZ.getValue() > algorithmParameters.getFeasibilityTolerance()) {
+								addConstraint = true;
+								break;
+							}
+						}
+						if (addConstraint) {
+							GRBLinExpr robustnessExprUpperBound = new GRBLinExpr();
+							robustnessExprUpperBound.addTerm(1, p[i]);
+							for (int varIndex : cliquePartitioning.getCliques().get(i)) {
+								Variable var = uncertainVariables[varIndex];
+								if (Math.min(var.getDeviation(), upperBoundsUsedForSubstituting[varIndex]) > upperBoundZ.getValue()) {
+									robustnessExprUpperBound.addTerm(-(Math.min(var.getDeviation(), upperBoundsUsedForSubstituting[varIndex])-upperBoundZ.getValue()), var.getModelVariable());
+								}
+							}
+							GRBConstr constrUpperBound = model.addConstr(robustnessExprUpperBound, GRB.GREATER_EQUAL, 0, "");
+							robustnessConstraintsUpperBound[i] = constrUpperBound;
+							temporaryConstraints.add(constrUpperBound);
+						}
+					}
+				}
+			}
+			else {
+				robustnessConstraintsLowerBound = new GRBConstr[uncertainVariables.length];
+				robustnessConstraintsUpperBound = new GRBConstr[uncertainVariables.length];
+				for (int i = uncertainVariables.length-1; i >= 0; i--) {
+					Variable var = uncertainVariables[i];
+					//Tests whether the lower bound constraint should be added
+					if (Math.min(var.getDeviation(), upperBoundsUsedForSubstituting[i]) - lowerBoundZ.getValue() > algorithmParameters.getFeasibilityTolerance()) {
+						GRBLinExpr robustnessExprLowerBound = new GRBLinExpr();
+						robustnessExprLowerBound.addTerm(1, p[i]);
+						robustnessExprLowerBound.addTerm(1, z);
+						robustnessExprLowerBound.addTerm(-(Math.min(var.getDeviation(), upperBoundsUsedForSubstituting[i])-lowerBoundZ.getValue()), var.getModelVariable());
+						GRBConstr constrLowerBound;
+						constrLowerBound = model.addConstr(robustnessExprLowerBound, GRB.GREATER_EQUAL, lowerBoundZ.getValue(), "");
+						robustnessConstraintsLowerBound[i] = constrLowerBound;
+						temporaryConstraints.add(constrLowerBound);
+					}
+					
+					//If we don't apply substitution to a variable and their deviation is high, then we add an upper bound constraint
+					if (isIndexNonSubstitutable[i]) {
+						//Tests whether the upper bound constraint should be added
+						if (Math.min(var.getDeviation(), upperBoundsUsedForSubstituting[i]) - upperBoundZ.getValue() > algorithmParameters.getFeasibilityTolerance()) {
+							GRBLinExpr robustnessExprUpperBound = new GRBLinExpr();
+							robustnessExprUpperBound.addTerm(1, p[i]);
+							robustnessExprUpperBound.addTerm(-(Math.min(var.getDeviation(), upperBoundsUsedForSubstituting[i])-upperBoundZ.getValue()), var.getModelVariable());
+							GRBConstr constrUpperBound = model.addConstr(robustnessExprUpperBound, GRB.GREATER_EQUAL, 0, "");
+							robustnessConstraintsUpperBound[i] = constrUpperBound;
+							temporaryConstraints.add(constrUpperBound);
+						}
+					}
 				}
 			}
 		}
+		//No robustness constraints if we apply lagrange
 		else {
-			for (int i = uncertainVariables.length-1; i >= 0; i--) {
-				Variable var = uncertainVariables[i];
-				//We only add a constraint if deviations - lower bound is larger than the feasibility tolerance.
-				if (var.getDeviation() - lowerBoundZ.getValue() > algorithmParameters.getFeasibilityTolerance()) {
-					GRBLinExpr robustnessExpr = new GRBLinExpr();
-					robustnessExpr.addTerm(1, pPrime[i]);
-					robustnessExpr.addTerm(1, zPrime);
-					robustnessExpr.addTerm(-(Math.min(var.getDeviation(), upperBoundZ.getValue())-lowerBoundZ.getValue()), var.getModelVariable());
-					temporaryConstraints.add(model.addConstr(robustnessExpr, GRB.GREATER_EQUAL, 0, ""));
-				}
-			}
+			robustnessConstraintsLowerBound = null;
+			robustnessConstraintsUpperBound = null;
 		}
 		model.update();
 	}
@@ -234,32 +782,16 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	 * Obtains an incumbent solution, computes the optimal z and improves the primal bound if
 	 * the new solution is the new best.
 	 */
-	private void improveZ (double incumbentObjectiveValue, double[] incumbentNominalVariablesValues, double[] incumbentUncertainVariablesValues) {
+	private void improveZ (double[] incumbentNominalVariablesValues, double[] incumbentUncertainVariablesValues) {
 		//Computes optimal value for z
 		double optimalZ = computeOptimalBilinearZ(incumbentUncertainVariablesValues);
 		//Computes the optimal objective value
 		double objectiveValue = computeBilinearSolutionValue(incumbentNominalVariablesValues, incumbentUncertainVariablesValues, optimalZ);
-		//Updates the global primal bound if the new incumbent is better
-		if (objectiveValue < globalPrimalBound ) {
-			globalPrimalBound = objectiveValue;
-			improvedZ = optimalZ;
-			incumbentValues = incumbentNominalVariablesValues;
-			if (objectiveValue < incumbentObjectiveValue - algorithmParameters.getAbsoluteGapTolerance()) {
-				String output = "###Improved solution with optimal z = "+optimalZ+" to the new global primal bound = "+objectiveValue;
-				try {
-					AbstractAlgorithm.writeOutput(output, algorithmParameters);
-				} catch (IOException e) {
-					e.printStackTrace();
-				}
-			}
-			else {
-				String output = "###Found new global primal bound = "+objectiveValue;
-				try {
-					AbstractAlgorithm.writeOutput(output, algorithmParameters);
-				} catch (IOException e) {
-					e.printStackTrace();
-				}
-			}
+		//Updates the improved primal bound if the new incumbent is better
+		if (objectiveValue < improvedPrimalBound) {
+			improvedPrimalBound = objectiveValue;
+			improvedZ = Optional.of(optimalZ);
+			improvedNominalVariablesSolutionValues = incumbentNominalVariablesValues;
 		}
 	}
 	
@@ -267,100 +799,49 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	 * Implements the callbacks for termination and improving of incumbent solutions.
 	 */
 	private class Callback extends GRBCallback {
-		/**
-		 * Saves the last time stamp at which we were able to prune a possible value of z via estimators. 
-		 */
-		private Long timeStampLastPrune = null;
-		
-		/**
-		 * Remaining values of z that are not yet pruned for which we have computed an estimator
-		 * from the upper bound of z.
-		 */
-		private ArrayList<PossibleZ> remainingPossibleZsForUpperBoundZ = null;
-		
-		/**
-		 * Remaining values of z that are not yet pruned for which we have computed an estimator
-		 * from the lower bound of z.
-		 */
-		private ArrayList<PossibleZ> remainingPossibleZsForLowerBoundZ = null;
-
+				
 		@Override
 		protected void callback() {
+			//Stores incumbent solutions and potentially tries to improve an incumbent solution computing an optimal value for z.
 			try {
-				//Tries to terminate the subproblem if the option is chosen.
-				if (boundingStrategies.getTerminationStrategy() == BoundingTerminationStrategy.TERMINATION_ENABLE && where == GRB.CB_MIP) {
-					//Queries the current primal and dual bound from the subproblem.
-					primalBound = getDoubleInfo(GRB.CB_MIP_OBJBST);
+				if (where == GRB.CB_MIPSOL) {
+					if (boundingStrategies.getImprovingZStrategy() == ImprovingZStrategy.IMPROVINGZ_ENABLE) {
+						double[] incumbentNominalVariablesValues = getSolution(nominalModelVariables);
+						double[] incumbentUncertainVariablesValues = getSolution(uncertainModelVariables);
+						improveZ(incumbentNominalVariablesValues, incumbentUncertainVariablesValues);
+					}
+					else {
+						if (getDoubleInfo(GRB.CB_MIPSOL_OBJ) < improvedPrimalBound) {
+							improvedPrimalBound = getDoubleInfo(GRB.CB_MIPSOL_OBJ);
+							improvedZ = Optional.of(getSolution(z));
+							improvedNominalVariablesSolutionValues = getSolution(nominalModelVariables);
+						}
+					}
+				}
+			} catch (GRBException e) {
+				e.printStackTrace();
+			}
+
+			
+			//Reports current primal and dual bounds to the master and possibly asks for termination
+			try {
+				if (where == GRB.CB_MIP) {
 					dualBound = getDoubleInfo(GRB.CB_MIP_OBJBND);
-					//Checks whether the subproblem can be terminated with respect to the global primal
-					//bound and the current dual bound.
-					if (AbstractAlgorithm.isOptimal(Math.min(primalBound, globalPrimalBound), dualBound, algorithmParameters)) {
-						//Initializes the time stamp and remaining possible z for pruning.
-						if (timeStampLastPrune == null) {
-							timeStampLastPrune = System.nanoTime();
-							remainingPossibleZsForUpperBoundZ = new ArrayList<PossibleZ>(upperBoundZ.getEstimators().keySet());
-							remainingPossibleZsForLowerBoundZ = new ArrayList<PossibleZ>(lowerBoundZ.getEstimators().keySet());
-						}
-						//Checks whether we can hope for pruning additional possible z.
-						boolean pruningPossible = false;
-						for (int i = remainingPossibleZsForUpperBoundZ.size()-1; i >= 0; i--) {
-							//Computes the dual bound for the possible z using the estimator.
-							PossibleZ comparedPossibleZ = remainingPossibleZsForUpperBoundZ.get(i);
-							double estimator = upperBoundZ.getEstimators().get(comparedPossibleZ);
-							double dualBoundComparedPossibleZ = Math.max(comparedPossibleZ.getDualBound(), dualBound - estimator);
-							//Checks whether the dual bound is good enough for pruning.
-							if (AbstractAlgorithm.isOptimal(Math.min(primalBound, globalPrimalBound), dualBoundComparedPossibleZ, algorithmParameters)) {
-								//Removes the possible z and sets the time stamp.
-								remainingPossibleZsForUpperBoundZ.remove(i);
-								timeStampLastPrune = System.nanoTime();
-							}
-							//If raising the dual bound up to the primal bound would be sufficient
-							//to prune the possible z then we can hope for pruning it later and
-							//don't terminate the subproblem if the last time stamp is not too far in the past.
-							else if (AbstractAlgorithm.isOptimal(Math.min(primalBound, globalPrimalBound), primalBound - estimator, algorithmParameters)) {
-								pruningPossible = true;
-							}
-						}
-						//Same as above for the possible z for which we have computed an estimator
-						//from the lower bound of z.
-						for (int i = remainingPossibleZsForLowerBoundZ.size()-1; i >= 0; i--) {
-							PossibleZ comparedPossibleZ = remainingPossibleZsForLowerBoundZ.get(i);
-							double estimator = lowerBoundZ.getEstimators().get(comparedPossibleZ);
-							double dualBoundComparedPossibleZ = Math.max(comparedPossibleZ.getDualBound(), dualBound - estimator);
-							if (AbstractAlgorithm.isOptimal(globalPrimalBound, dualBoundComparedPossibleZ, algorithmParameters)) {
-								remainingPossibleZsForLowerBoundZ.remove(i);
-								timeStampLastPrune = System.nanoTime();
-							}
-							else if (AbstractAlgorithm.isOptimal(globalPrimalBound, primalBound - estimator, algorithmParameters)) {
-								pruningPossible = true;
-							}
-						}
-						//If there is hope for pruning further possible z and the last pruning
-						//has happened in the last 10 seconds then we continue solving the subproblem.
-						if (!pruningPossible || (System.nanoTime()-timeStampLastPrune)/Math.pow(10, 9) >= 10) {
-							String output = "###Terminated due to global primal bound";
-							try {
-								AbstractAlgorithm.writeOutput(output, algorithmParameters);
-							} catch (IOException e) {}
-							
+					primalBound = getDoubleInfo(GRB.CB_MIP_OBJBST);
+					
+					if (boundingStrategies.getTerminationStrategy() == BoundingTerminationStrategy.TERMINATION_ENABLE) {
+						if (bnbCallback.updateBoundsAndDecideTermination(improvedPrimalBound, primalBound, dualBound)) {
 							abort();
 						}
+					}
+					else {
+						bnbCallback.updatePrimalDualBounds(improvedPrimalBound, dualBound);
 					}
 				}
 			} catch (GRBException e1) {
 				e1.printStackTrace();
 			}
 
-			//Tries to improve an incumbent solution computing an optimal value for z.
-			try {
-				if (boundingStrategies.getImprovingZStrategy() == ImprovingZStrategy.IMPROVINGZ_ENABLE && where == GRB.CB_MIPSOL) {
-						double[] incumbentNominalVariablesValues = getSolution(nominalModelVariables);
-						double[] incumbentUncertainVariablesValues = getSolution(uncertainModelVariables);
-						improveZ(getDoubleInfo(GRB.CB_MIPSOL_OBJ), incumbentNominalVariablesValues, incumbentUncertainVariablesValues);
-				}
-			} catch (GRBException e) {
-				e.printStackTrace();
-			}
 		}
 	}
 	
@@ -370,190 +851,185 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	@Override
 	void solve(Optional<Double> timeLimit) throws IOException, GRBException  {
 		super.solve(timeLimit);
-		//Tries to query the solution values for z (resubstituted).
+		//Tries to query the solution values for z.
 		//Value is null if this fails.
 		try {
-			zSolutionValue = lowerBoundZ.getValue() + zPrime.get(GRB.DoubleAttr.X);
+			if (!applyLagrangeRelaxation) {
+				zSolutionValue = Optional.of(z.get(GRB.DoubleAttr.X));
+				pSolutionValues = model.get(GRB.DoubleAttr.X, p);
+				
+				//Potentially resubstitutes the variables p.
+				if (cliquePartitioning != null) {
+					for (int i = 0; i < p.length; i++) {
+						for (int varIndex : cliquePartitioning.getCliques().get(i)) {
+							pSolutionValues[i] += Math.max(0,(uncertainVariables[varIndex].getDeviation() - upperBoundsUsedForSubstituting[varIndex]) * uncertainVariablesSolutionValues[varIndex]);
+						}
+					}
+				}
+				else {
+					for (int i = 0; i < p.length; i++) {
+						pSolutionValues[i] += Math.max(0,(uncertainVariables[i].getDeviation() - upperBoundsUsedForSubstituting[i]) * uncertainVariablesSolutionValues[i]);
+					}
+				}
+			}
 		} catch (GRBException e) { }
 	}
 	
+
 	/**
-	 * Returns whether a branching is effective by checking if the current solution is cut-off
-	 * in the child nodes defined by the new lower bound and the new upper bound.
-	 * Takes optimality-cuts into consideration if the option is chosen.
+	 * Computes the lowest possible value of z in the current node that would be an efficient branching point.
 	 */
-	boolean isBranchingEffective(double Gamma, double newUpperBound, double newLowerBound, BoundingLPOptimalityCutsStrategy optimalityCutsStrategy) {
-		//If z obeys the new upper bound then we have to check whether the new optimality-cuts
-		//or the stronger formulation cut-off the current solution.
-		//If this is the case then the branching is effective, as z does not obey the new lower bound.
-		if (zSolutionValue <= newUpperBound) {
-			boolean isEffective = false;
-			if (optimalityCutsStrategy == BoundingLPOptimalityCutsStrategy.LPOPTCUTS_ENABLE) {
-				double lhs = 0;
-				for (int i = 0; i < uncertainVariables.length; i++) {
-					Variable var = uncertainVariables[i];
-					if (var.getDeviation() > newUpperBound){
-						lhs+=uncertainVariablesSolutionValues[i];
+	public double getLowerBoundEffectiveBranching(BnBNode chosenNode) {
+		if (applyLagrangeRelaxation) {
+			//If we apply Lagrangean relaxation and theta is the branching point,
+			//then the sum of x*Lagrange for variables whose deviation is greater or equal than theta must be less than Gamma.
+			
+			//The sum for all x*Lagrange whose deviation is greater or equal than the minimum value for z
+			double sum = 0;
+			//The largest index of a variable that has not been counted in the sum
+			int largestUncountedIndex= -1;
+			for (int varIndex = uncertainVariables.length-1; varIndex >= 0; varIndex--) {
+				if (uncertainVariables[varIndex].getDeviation() < lowerBoundZ.getValue()) {
+					largestUncountedIndex = varIndex;
+					break;
+				}
+				sum += uncertainVariablesSolutionValues[varIndex]*lagrangeMultipier;
+			}
+			
+			//Checks for all possible z
+			for (int zIndex = 0; zIndex < chosenNode.getPossibleZs().size()-1 ; zIndex++) {
+				double possibleLowerBound = chosenNode.getPossibleZs().get(zIndex).getValue();
+				//Reduces the sum and sets the new uncounted index
+				for (int varIndex = largestUncountedIndex+1; varIndex < uncertainVariables.length; varIndex++) {
+					if (uncertainVariables[varIndex].getDeviation() >= possibleLowerBound) {
+						largestUncountedIndex = varIndex-1;
+						break;
+					}
+					sum -= uncertainVariablesSolutionValues[varIndex]*lagrangeMultipier;
+				}
+				//Checks whether sum is smaller than Gamma
+				if (sum < Gamma) {
+					return possibleLowerBound;
+				}
+			}
+			//The second largest possible z is always effective
+			return chosenNode.getPossibleZs().get(chosenNode.getPossibleZs().size()-2).getValue();
+
+		}
+		else {
+			//If we don't apply Lagrangean relaxation, then we compute the minimum branching point
+			//such that one of the robustness constraints is violated.
+			
+			//The second largest possible z is always effective
+			double lowerBoundEffectiveBranching = chosenNode.getPossibleZs().get(chosenNode.getPossibleZs().size()-2).getValue();
+			//Checks all robustness constraints
+			for (int pIndex = 0; pIndex < p.length; pIndex++) {
+				//Breaks if the bound is minimum
+				if (lowerBoundEffectiveBranching == lowerBoundZ.getValue()) {
+					break;
+				}
+				//Computes the minimum effective bound for this constraint
+				double lhs = zSolutionValue.get() + pSolutionValues[pIndex];
+				for (int k = 0; k < chosenNode.getPossibleZs().size()-1; k++) {
+					double possibleLowerBound = chosenNode.getPossibleZs().get(k).getValue();
+					//Breaks if the currently tested value is not smaller than an already found bound.
+					if (possibleLowerBound >= lowerBoundEffectiveBranching) {
+						break;
+					}
+					double rhs = possibleLowerBound;
+					if (cliquePartitioning != null) {
+						for (int varIndex : cliquePartitioning.getCliques().get(pIndex)) {
+							Variable var = uncertainVariables[varIndex];
+							if (uncertainVariablesSolutionValues[varIndex] > 0 && var.getDeviation() > possibleLowerBound) {
+								rhs += (var.getDeviation() - possibleLowerBound) * uncertainVariablesSolutionValues[varIndex];
+							}
+						}
+					}
+					else {
+						Variable var = uncertainVariables[pIndex];
+						if (uncertainVariablesSolutionValues[pIndex] > 0 && var.getDeviation() > possibleLowerBound) {
+							rhs += (var.getDeviation() - possibleLowerBound) * uncertainVariablesSolutionValues[pIndex];
+						}
+					}
+					//Updates the bound if we found a violation
+					if (lhs < rhs - algorithmParameters.getFeasibilityTolerance()) {
+						lowerBoundEffectiveBranching = possibleLowerBound;
 					}
 				}
-				if (lhs > Math.floor(Gamma)+algorithmParameters.getFeasibilityTolerance()) {
-					isEffective = true;
-				}
 			}
-			if (!isEffective) {
-				isEffective = isNewUpperBoundEffective(newUpperBound);
-			}
-			return isEffective;
+			return lowerBoundEffectiveBranching;
 		}
-		//If z obeys the new lower bound then we have to check whether the new optimality-cuts
-		//or the stronger formulation cut-off the current solution.
-		//If this is the case then the branching is effective, as z does not obey the new upper bound.
-		if (zSolutionValue >= newLowerBound) {
-			boolean isEffective = false;
-			if (optimalityCutsStrategy == BoundingSubproblemsStrategies.BoundingLPOptimalityCutsStrategy.LPOPTCUTS_ENABLE) {
-				double lhs = 0;
-				for (int i = 0; i < uncertainVariables.length; i++) {
-					Variable var = uncertainVariables[i];
-					if (var.getDeviation() >= newLowerBound){
-						lhs+=uncertainVariablesSolutionValues[i];
-					}
-				}
-				if (lhs < Math.ceil(Gamma)-algorithmParameters.getFeasibilityTolerance()) {
-					isEffective = true;
-				}
-			}
-			if (!isEffective) {
-				isEffective = isNewLowerBoundEffective(newLowerBound);
-			}
-			return isEffective;
-		}
-		//Returns true of z obeys neither the new lower not the new upper bound. 
-		return true;
 	}
 	
+	
 	/**
-	 * Checks whether the current solution is cut-off for a new upper bound on z.
+	 * Computes the highest possible value of z in the current node that would be an efficient branching point.
 	 */
-	private boolean isNewUpperBoundEffective(double newUpperBound) {
-		//Queries the values of the substituted variable p. If this fails then there exists
-		//no computed solution and we return true.
-		double[] pPrimeSolutionValues;
-		try {
-			pPrimeSolutionValues = model.get(GRB.DoubleAttr.X, pPrime);
-		} catch (GRBException e) {
-			return true;
-		}
-		
-		//Computes the left-hand and right-hand side of the new (not substituted) constraint
-		//p >= (deviation - newUpperBound)x.
-		//Returns true if lhs < rhs for any constraint, false otherwise.
-		if (cliquePartitioning != null) {
-			for (int i = 0; i < pPrime.length; i++) {
-				double lhs = pPrimeSolutionValues[i];
-				double rhs = 0;
-				for (int varIndex : cliquePartitioning.getCliques().get(i)) {
-					Variable var = uncertainVariables[varIndex];
-					if (uncertainVariablesSolutionValues[varIndex] > 0) {
-						//Resubstitutes the variables p.
-						if (var.getDeviation() > upperBoundZ.getValue()) {
-							lhs += (var.getDeviation() - upperBoundZ.getValue()) * uncertainVariablesSolutionValues[varIndex];
-						}
-						if (var.getDeviation() > newUpperBound) {
-							rhs += (var.getDeviation() - newUpperBound) * uncertainVariablesSolutionValues[varIndex];
-						}
-					}
-				}
-				if (lhs < rhs - algorithmParameters.getFeasibilityTolerance()) {
-					return true;
+	public double getUpperBoundEffectiveBranching(BnBNode chosenNode) {
+		if (applyLagrangeRelaxation) {
+			//If we apply Lagrangean relaxation and theta is the branching point, then there must be a
+			//variable with deviation > theta, positive solution value, and Lagrange multiplier < 1.
+			//Since our choice of Lagrange multipliers is never equal to one (otherwise we would stop branching),
+			//we search for the variable with largest deviation and positive solution value.
+			double largestPosSolutionDeviation = 0;
+			for (int varIndex = uncertainVariables.length-1; varIndex >=0 ; varIndex--) {
+				if (uncertainVariablesSolutionValues[varIndex] > 0) {
+					largestPosSolutionDeviation = uncertainVariables[varIndex].getDeviation();
+					break;
 				}
 			}
+			//Finds the largest possible branching point that is smaller than the deviation.
+			for (int zIndex = chosenNode.getPossibleZs().size()-2; zIndex >=0 ; zIndex--) {
+				if (chosenNode.getPossibleZs().get(zIndex).getValue() < largestPosSolutionDeviation) {
+					return chosenNode.getPossibleZs().get(zIndex).getValue();
+				}
+			}
+			//The smallest possible z is always effective.
+			return lowerBoundZ.getValue();
 		}
 		else {
-			for (int i = 0; i < pPrime.length; i++) {
-				if (uncertainVariablesSolutionValues[i] > 0) {
-					Variable var = uncertainVariables[i];
-
-					//Resubstitutes the variable p.
-					double lhs = pPrimeSolutionValues[i];
-					if (var.getDeviation() > upperBoundZ.getValue()) {
-						lhs += (var.getDeviation() - upperBoundZ.getValue()) * uncertainVariablesSolutionValues[i];
+			//If we don't apply Lagrangean relaxation, then we compute the maximum branching point
+			//such that one of the robustness constraints is violated.
+			
+			//The smallest possible z is always effective.
+			double upperBoundEffectiveBranching = lowerBoundZ.getValue();
+			//Checks all robustness constraints
+			for (int pIndex = 0; pIndex < p.length; pIndex++) {
+				//Breaks if the bound is maximum
+				if (upperBoundEffectiveBranching == chosenNode.getPossibleZs().get(chosenNode.getPossibleZs().size()-2).getValue()) {
+					break;
+				}
+				//Computes the maximum effective bound for this constraint
+				double lhs = pSolutionValues[pIndex];
+				for (int zIndex = chosenNode.getPossibleZs().size()-2; zIndex >= 0; zIndex--) {
+					double possibleUpperBound = chosenNode.getPossibleZs().get(zIndex).getValue();
+					//Breaks if we the currently tested value is not greater than an already found bound.
+					if (possibleUpperBound <= upperBoundEffectiveBranching) {
+						break;
 					}
-					
 					double rhs = 0;
-					if (var.getDeviation() > newUpperBound) {
-						rhs += (var.getDeviation() - newUpperBound) * uncertainVariablesSolutionValues[i];
-					}
-					if (lhs < rhs - algorithmParameters.getFeasibilityTolerance()) {
-						return true;
-					}
-				}
-			}
-		}
-		return false;
-	}
-
-	/**
-	 * Checks whether the current solution is cut-off for a new upper bound on z.
-	 */
-	private boolean isNewLowerBoundEffective(double newLowerBound) {
-		//Queries the values of the substituted variable p. If this fails then there exists
-		//no computed solution and we return true.
-		double[] pPrimeSolutionValues;
-		try {
-			pPrimeSolutionValues = model.get(GRB.DoubleAttr.X, pPrime);
-		} catch (GRBException e) {
-			return true;
-		}
-		
-		//Computes the left-hand and right-hand side of the new (not substituted) constraint
-		//p + z >= (deviation - newLowerBound)x + newLowerBound.
-		//Returns true if lhs < rhs for any constraint, false otherwise.
-		if (cliquePartitioning != null) {
-			for (int i = 0; i < pPrime.length; i++) {
-				double lhs = zSolutionValue + pPrimeSolutionValues[i];
-				double rhs = newLowerBound;
-				
-				for (int varIndex : cliquePartitioning.getCliques().get(i)) {
-					Variable var = uncertainVariables[varIndex];
-					if (uncertainVariablesSolutionValues[varIndex] > 0) {
-						//Resubstitutes the variables p.
-						if (var.getDeviation() > upperBoundZ.getValue()) {
-							lhs += (var.getDeviation() - upperBoundZ.getValue()) * uncertainVariablesSolutionValues[varIndex];
-						}
-						if (var.getDeviation() > newLowerBound) {
-							rhs += (var.getDeviation() - newLowerBound) * uncertainVariablesSolutionValues[varIndex];
+					if (cliquePartitioning != null) {
+						for (int varIndex : cliquePartitioning.getCliques().get(pIndex)) {
+							Variable var = uncertainVariables[varIndex];
+							if (uncertainVariablesSolutionValues[varIndex] > 0 && var.getDeviation() > possibleUpperBound) {
+								rhs += (var.getDeviation() - possibleUpperBound) * uncertainVariablesSolutionValues[varIndex];
+							}
 						}
 					}
-				}
-				
-				if (lhs < rhs - algorithmParameters.getFeasibilityTolerance()) {
-					return true;
-				}
-			}
-		}
-		else {
-			for (int i = 0; i < pPrime.length; i++) {
-				if (uncertainVariablesSolutionValues[i] > 0) {
-					Variable var = uncertainVariables[i];
-					double lhs = zSolutionValue + pPrimeSolutionValues[i];
-					
-					//Resubstitutes the variables p.
-					if (var.getDeviation() > upperBoundZ.getValue()) {
-						lhs += (var.getDeviation() - upperBoundZ.getValue()) * uncertainVariablesSolutionValues[i];
+					else {
+						Variable var = uncertainVariables[pIndex];
+						if (uncertainVariablesSolutionValues[pIndex] > 0 && var.getDeviation() > possibleUpperBound) {
+							rhs += (var.getDeviation() - possibleUpperBound) * uncertainVariablesSolutionValues[pIndex];
+						}
 					}
-					
-					double rhs = newLowerBound;
-					if (var.getDeviation() > newLowerBound) {
-						rhs += (var.getDeviation() - newLowerBound) * uncertainVariablesSolutionValues[i];
-					}
-					
+					//Updates the bound if we found a violation
 					if (lhs < rhs - algorithmParameters.getFeasibilityTolerance()) {
-						return true;
+						upperBoundEffectiveBranching = possibleUpperBound;
 					}
 				}
 			}
+			return upperBoundEffectiveBranching;
 		}
-		return false;
 	}
 	
 	/**
@@ -576,21 +1052,21 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	/**
 	 * Returns the value for z computed by Gurobi.
 	 */
-	Double getComputedZ() {
+	Optional<Double> getComputedZ() {
 		return zSolutionValue;
 	}
 	
 	/**
-	 * Returns the global primal bound.
+	 * Returns the improved primal bound.
 	 */
-	double getGlobalPrimalBound() {
-		return this.globalPrimalBound;
+	double getImprovedPrimalBound() {
+		return this.improvedPrimalBound;
 	}
 	
 	/**
 	 * Returns the improved value for z.
 	 */
-	Double getImprovedZ() {
+	Optional<Double> getImprovedZ() {
 		return this.improvedZ;
 	}
 	
@@ -598,15 +1074,7 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 	 * Returns solution values of the incumbent.
 	 */
 	double[] getIncumbentValues() {
-		return this.incumbentValues;
-	}
-
-	
-	/**
-	 * Sets the global primal bound.
-	 */
-	void setGlobalPrimalBound(double globalPrimalBound) {
-		this.globalPrimalBound = globalPrimalBound;
+		return this.improvedNominalVariablesSolutionValues;
 	}
 	
 	/**
@@ -636,12 +1104,30 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 			IPOPTCUTS_ENABLE,
 			IPOPTCUTS_DISABLE;
 		}
+		
+		/**
+		 * Enum type specifying whether we use optimality-cuts.
+		 */
+		public enum BoundingLPLagrangeRelaxStrategy {
+			LAGRANGERELAX_NEVER,
+			LAGRANGERELAX_HYBRID,
+			LAGRANGERELAX_ALWAYS;
+		}
+		
+		/**
+		 * Enum type specifying whether we use optimality-cuts.
+		 */
+		public enum BoundingLPWarmStartStrategy {
+			WARMSTART_ENABLE,
+			WARMSTART_DISABLE;
+		}
 
-		BoundingTerminationStrategy terminationStrategy;
-		BoundingLPOptimalityCutsStrategy lpOptimalityCutsStrategy;
-		BoundingIPOptimalityCutsStrategy ipOptimalityCutsStrategy;
-		
-		
+		protected BoundingTerminationStrategy terminationStrategy;
+		protected BoundingLPOptimalityCutsStrategy lpOptimalityCutsStrategy;
+		protected BoundingIPOptimalityCutsStrategy ipOptimalityCutsStrategy;
+		protected BoundingLPLagrangeRelaxStrategy lagrangeRelaxStrategy;
+		protected BoundingLPWarmStartStrategy warmStartStrategy;
+
 		/**
 		 * Constructor obtaining arguments which are matched to the enums defining strategies.
 		 */
@@ -668,6 +1154,20 @@ public class SubproblemBoundedGurobi extends SubproblemGurobi{
 		}
 		public void setIPOptimalityCutsStrategy(BoundingIPOptimalityCutsStrategy ipOptimalityCutsStrategy) {
 			this.ipOptimalityCutsStrategy = ipOptimalityCutsStrategy;
+		}
+
+		public BoundingLPLagrangeRelaxStrategy getLagrangeRelaxLPStrategy() {
+			return lagrangeRelaxStrategy;
+		}
+		public void setLagrangeRelaxLPStrategy(BoundingLPLagrangeRelaxStrategy lagrangeRelaxStrategy) {
+			this.lagrangeRelaxStrategy = lagrangeRelaxStrategy;
+		}
+		
+		public BoundingLPWarmStartStrategy getWarmStartStrategy() {
+			return warmStartStrategy;
+		}
+		public void setWarmStartStrategy(BoundingLPWarmStartStrategy warmStartStrategy) {
+			this.warmStartStrategy = warmStartStrategy;
 		}
 	}
 }

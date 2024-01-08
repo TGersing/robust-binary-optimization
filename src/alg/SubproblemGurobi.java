@@ -18,11 +18,16 @@ import util.Variable;
  * 
  * @author Timo Gersing
  */
-abstract class SubproblemGurobi extends RobustProblemGurobi{	
+abstract class SubproblemGurobi extends RobustProblemGurobi{
 	/**
 	 * Constraints temporarily added to the subproblem.
 	 */
 	protected List<GRBConstr> temporaryConstraints = new ArrayList<GRBConstr>();
+	
+	/**
+	 * Optimality cuts added to the subproblem.
+	 */
+	protected List<GRBConstr> optimalityCuts = new ArrayList<GRBConstr>();
 	
 	/**
 	 * Optimality cut using the lower bound on z.
@@ -32,6 +37,7 @@ abstract class SubproblemGurobi extends RobustProblemGurobi{
 	 * Optimality cut using the upper bound on z.
 	 */
 	protected GRBConstr upperOptCut;
+	
 	
 	SubproblemGurobi(String problemPath, String robustPath, AlgorithmParameters algorithmParameters) throws GRBException, IOException {
 		super(problemPath, robustPath, algorithmParameters);
@@ -52,12 +58,25 @@ abstract class SubproblemGurobi extends RobustProblemGurobi{
 	 * is greater than or equal to gamma.
 	 */
 	protected double computeOptimalBilinearZ(double[] uncertainVariablesSolutionValues) {
+//		double optimalZ = 0;
+//		double sum = 0;
+//		int varIndex = getUncertainVariables().length-1;
+//		while (varIndex >= 0) {
+//			sum += uncertainVariablesSolutionValues[varIndex];
+//			if (sum >= getGamma()) {
+//				optimalZ = getUncertainVariables()[varIndex].getDeviation();
+//				break;
+//			}
+//			varIndex--;
+//		}
+//		return optimalZ;
+		
 		double optimalZ = 0;
-		double sum = 0;
+		double sum2 = 0;
 		int varIndex = getUncertainVariables().length-1;
 		while (varIndex >= 0) {
-			sum += uncertainVariablesSolutionValues[varIndex];
-			if (sum >= getGamma()) {
+			sum2 += uncertainVariablesSolutionValues[varIndex];
+			if (sum2 > getGamma()) {
 				optimalZ = getUncertainVariables()[varIndex].getDeviation();
 				break;
 			}
@@ -91,7 +110,7 @@ abstract class SubproblemGurobi extends RobustProblemGurobi{
 			}
 		}
 		return solutionValue;
-	}	
+	}
 	
 	/**
 	 * Adds optimality-cuts to the model for a given lower and upper bound on z.
@@ -107,6 +126,7 @@ abstract class SubproblemGurobi extends RobustProblemGurobi{
 			}
 			lowerOptCut = model.addConstr(grbLinExpr, GRB.GREATER_EQUAL, Math.ceil(Gamma), "LowerOptimalityCut"+lowerBoundZ.getValue());			
 			temporaryConstraints.add(lowerOptCut);
+			optimalityCuts.add(lowerOptCut);
 		}
 
 		GRBLinExpr grbLinExpr = new GRBLinExpr();
@@ -117,6 +137,7 @@ abstract class SubproblemGurobi extends RobustProblemGurobi{
 		}
 		upperOptCut = model.addConstr(grbLinExpr, GRB.LESS_EQUAL, Math.floor(Gamma), "UpperOptimalityCut"+upperBoundZ.getValue());
 		temporaryConstraints.add(upperOptCut);
+		optimalityCuts.add(upperOptCut);
 		model.update();
 		String output = "Use Optimality Cuts ["+lowerBoundZ+","+upperBoundZ+"]";
 		AbstractAlgorithm.writeOutput(output, algorithmParameters);

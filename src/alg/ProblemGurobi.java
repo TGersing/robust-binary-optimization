@@ -14,24 +14,19 @@ import gurobi.GRB.DoubleAttr;
 import util.Variable;
 
 /**
- * This class imports a problem from a file and can solve it using Gurobi.
- * We only support minimization problems. If the problem is a maximization problem then we convert it.
+ * This class imports a problem from a file and solves it using Gurobi.
+ * We only support minimization problems. If the problem is a maximization problem, then we convert it.
  * 
  * @author Timo Gersing
  */
 public class ProblemGurobi{
 	/**
-	 * Path to the file stating the problem.
-	 */
-	protected String problemPath;
-	
-	/**
-	 * The Gurobi model which we imported from the file.
+	 * The Gurobi model which we import from the file.
 	 */
 	protected GRBModel model;
 	
 	/**
-	 * Parameters of the corresponding algorithm.
+	 * Parameters of the algorithm, specifying logging, threads and tolerances.
 	 */
 	protected AlgorithmParameters algorithmParameters = new AlgorithmParameters();
 
@@ -75,7 +70,6 @@ public class ProblemGurobi{
 	 * If the imported problem is a maximization problem, then we convert it to a minimization problem.
 	 */
 	ProblemGurobi(String problemPath, AlgorithmParameters algorithmParameters) throws GRBException {
-		this.problemPath = problemPath;
 		this.algorithmParameters = algorithmParameters;
 		
 		//Reads the problem from file and disables output while importing.
@@ -85,7 +79,6 @@ public class ProblemGurobi{
 		model.set(GRB.IntParam.OutputFlag, 1);
 		
 		//Ensures minimization problem
-		System.out.println(model.get(GRB.IntAttr.ModelSense));
 		if (model.get(GRB.IntAttr.ModelSense) == GRB.MAXIMIZE) {
 			GRBLinExpr objExpr = (GRBLinExpr) model.getObjective();
 			GRBLinExpr newObjExpr = new GRBLinExpr(); 
@@ -110,7 +103,7 @@ public class ProblemGurobi{
 	}
 	
 	/**
-	 * Resets the problem to an unsolved state.
+	 * Resets the problem information to an unsolved state.
 	 */
 	protected void resetProblem() throws GRBException {
 		primalBound = AbstractAlgorithm.DEFAULT_PRIMAL_BOUND;
@@ -118,7 +111,6 @@ public class ProblemGurobi{
 		isStatusInfeasible = false;
 		isStatusOptimal = false;
 		nominalVariablesSolutionValues = null;
-		model.reset(1);
 	}	
 	
 	/**
@@ -180,13 +172,6 @@ public class ProblemGurobi{
 	}
 	
 	/**
-	 * Returns the path to the imported problem.
-	 */
-	String getProblemPath() {
-		return problemPath;
-	}
-	
-	/**
 	 * Returns the Gurobi model.
 	 */
 	public GRBModel getModel() {
@@ -240,12 +225,5 @@ public class ProblemGurobi{
 	 */
 	boolean isStatusOptimal() {
 		return isStatusOptimal;
-	}
-	
-	/**
-	 * Frees the Gurobi model.
-	 */
-	void disposeGurobi() throws GRBException {
-		this.model.dispose();
-	}
+	}	
 }

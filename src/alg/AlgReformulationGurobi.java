@@ -56,13 +56,15 @@ public class AlgReformulationGurobi extends AbstractAlgorithm implements RobustA
 		reformulateModel();
 		
 		robustProblem.solve(getRemainingTime());
-		primalBound = robustProblem.getPrimalBound();
-		dualBound = robustProblem.getDualBound();
+		setPrimalBound(robustProblem.getPrimalBound());
+		setDualBound(robustProblem.getDualBound());
 		
-		//Stores best solution found
-		solution = new LinkedHashMap<Variable, Double>(robustProblem.getNominalVariables().length);
-		for (int i = 0; i < robustProblem.getNominalVariables().length; i++) {
-			solution.put(robustProblem.getNominalVariables()[i], robustProblem.getNominalVariablesSolutionValues()[i]);
+		//Stores best solution found, if available
+		if (robustProblem.getNominalVariablesSolutionValues() != null) {
+			solution = new LinkedHashMap<Variable, Double>(robustProblem.getNominalVariables().length);
+			for (int i = 0; i < robustProblem.getNominalVariables().length; i++) {
+				solution.put(robustProblem.getNominalVariables()[i], robustProblem.getNominalVariablesSolutionValues()[i]);
+			}
 		}
 	}
 
@@ -109,16 +111,19 @@ public class AlgReformulationGurobi extends AbstractAlgorithm implements RobustA
 		for (int i = 0; i < pPrime.length; i++) {
 			objLinExpr.addTerm(1, pPrime[i]);
 		}
+		objLinExpr.addTerm(robustProblem.getGamma(), z);
+		//If a variable's deviation is higher than the highest possible optimal value for z,
+		//then we already add the difference to the obj coeff of the variable.
 		for (Variable uncertainVariable : uncertainVariables) {
 			if (uncertainVariable.getDeviation() > highestPossibleZ) {
 				objLinExpr.addTerm(uncertainVariable.getDeviation() - highestPossibleZ, uncertainVariable.getModelVariable());
 			}
 		}
-		objLinExpr.addTerm(robustProblem.getGamma(), z);
 		model.setObjective(objLinExpr);
 		
 				
-		//Adds the constraint of the form z+p>=d*x (using cliques if the option is chosen correspondingly), with d being the deviation.
+		//Adds the constraint of the form z+p>=d*x (using cliques if the option is chosen correspondingly).
+		//Here, d is the minimum of the deviation and the highest possible value for z
 		if (cliquePartitioning != null) {
 			int pIndex = 0;
 			for (List<Integer> clique : cliquePartitioning.getCliques()) {
@@ -156,7 +161,8 @@ public class AlgReformulationGurobi extends AbstractAlgorithm implements RobustA
 		protected void callback() {
 			if (where == GRB.CB_MIP) {
 				try {
-					primalDualIntegral.update(getDoubleInfo(GRB.CB_MIP_OBJBST), getDoubleInfo(GRB.CB_MIP_OBJBND), false);
+					setPrimalBound(getDoubleInfo(GRB.CB_MIP_OBJBST));
+					setDualBound(getDoubleInfo(GRB.CB_MIP_OBJBND));
 				} catch (GRBException e) {}
 			}
 		}

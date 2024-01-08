@@ -57,8 +57,14 @@ public class PossibleZ implements Comparable<PossibleZ>{
 	/**
 	 * Updates the dual bound to be the maximum of the current and a new dual bound.
 	 */
-	public void updateDualBound(double dualBound) {
-		this.dualBound = Math.max(this.dualBound, dualBound);
+	public boolean updateDualBound(double dualBound) {
+		if (this.dualBound < dualBound) {
+			this.dualBound = dualBound;
+			return true;
+		}
+		else {
+			return false;
+		}
 	}
 	
 	/**
@@ -84,7 +90,7 @@ public class PossibleZ implements Comparable<PossibleZ>{
 	 * Clears the map of estimators and then sets improved estimators, as described in the paper,
 	 * for all values for z in a given set.
 	 */
-	public <V> void setImprovedEstimators(TreeSet<PossibleZ> comparedZs, double Gamma, Variable[] uncertainVariables) {
+	public void setImprovedEstimators(TreeSet<PossibleZ> comparedZs, double Gamma, Variable[] uncertainVariables) {
 		estimators = new HashMap<PossibleZ, Double>();
 		computeImprovedEstimatorsAboveZ(comparedZs, uncertainVariables);
 		computeImprovedEstimatorsBelowZ(comparedZs, Gamma, uncertainVariables);
@@ -94,7 +100,7 @@ public class PossibleZ implements Comparable<PossibleZ>{
 	 * Clears the map of estimators and then sets improved estimators, as described in the paper,
 	 * for all values for z in a given set that are greater than the current z.
 	 */
-	public <V> void setImprovedEstimatorsAboveZ(TreeSet<PossibleZ> comparedZs, Variable[] uncertainVariables) {
+	public void setImprovedEstimatorsAboveZ(TreeSet<PossibleZ> comparedZs, Variable[] uncertainVariables) {
 		estimators = new HashMap<PossibleZ, Double>();
 		computeImprovedEstimatorsAboveZ(comparedZs, uncertainVariables);
 	}
@@ -103,7 +109,7 @@ public class PossibleZ implements Comparable<PossibleZ>{
 	 * Clears the map of estimators and then sets improved estimators, as described in the paper,
 	 * for all values for z in a given set that are smaller than the current z.
 	 */
-	public <V> void setImprovedEstimatorsBelowZ(TreeSet<PossibleZ> comparedZs, double Gamma, Variable[] uncertainVariables) {
+	public void setImprovedEstimatorsBelowZ(TreeSet<PossibleZ> comparedZs, double Gamma, Variable[] uncertainVariables) {
 		estimators = new HashMap<PossibleZ, Double>();
 		computeImprovedEstimatorsBelowZ(comparedZs, Gamma, uncertainVariables);
 	}
@@ -112,7 +118,7 @@ public class PossibleZ implements Comparable<PossibleZ>{
 	 * Computes improved estimators, as described in the paper, for all values for z in a given set
 	 * that are greater than the current z and adds them to the map of estimators.
 	 */
-	private <V> void computeImprovedEstimatorsAboveZ(TreeSet<PossibleZ> comparedZs, Variable[] uncertainVariables) {
+	private void computeImprovedEstimatorsAboveZ(TreeSet<PossibleZ> comparedZs, Variable[] uncertainVariables) {
 		//Value of the estimator.
 		double estimator = 0;
 		
@@ -213,10 +219,14 @@ public class PossibleZ implements Comparable<PossibleZ>{
 	 * Obtains a dual bound that is used to update the dual bounds of all possible z for which we
 	 * have computed an estimator. The new potential dual bound is dualBound-estimator.
 	 */
- 	public void estimateDualBounds(double dualBound) {
-		for (PossibleZ possibleZ : this.getEstimators().keySet()) {
-			possibleZ.updateDualBound(dualBound - this.getEstimators().get(possibleZ));
+ 	public boolean estimateDualBounds(double dualBound) {
+ 		boolean boundChanged = false;
+		for (PossibleZ possibleZ : this.estimators.keySet()) {
+			if (possibleZ.updateDualBound(dualBound - this.estimators.get(possibleZ))) {
+				boundChanged = true;
+			}
 		}
+		return boundChanged;
 	}
 	
  	/**
@@ -228,7 +238,7 @@ public class PossibleZ implements Comparable<PossibleZ>{
 	}
 	
 	/**
-	 * Possible z are represented as a sting using their value.
+	 * Possible z are represented as a string using their value.
 	 */
 	@Override
 	public String toString() {
