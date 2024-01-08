@@ -7,7 +7,7 @@ Written by Timo Gersing
 
 ## Introduction
 This project provides algorithms for solving robust binary optimization problems with budgeted uncertainty in the objective function.
-The algorithms are implemented as described in the paper "A Branch and Bound Algorithm for Robust Binary Optimization with Budget Uncertainty", published in Mathematical Programming Computation by Christina Büsing, Timo Gersing and Arie Koster, and "Recycling Inequalities for Robust Combinatorial Optimization with Budget Uncertainty" presented by the same authors at IPCO 2023.
+The algorithms are implemented as described in the thesis "Algorithms for Robust Combinatorial Optimization with Budgeted Uncertainty and Fair Planning of the Out-of-Hours Service for Pharmacies" by Timo Gersing. They have been published before in slightly different versions in the papers "A Branch and Bound Algorithm for Robust Binary Optimization with Budget Uncertainty", published in Mathematical Programming Computation by Christina Büsing, Timo Gersing and Arie Koster, and "Recycling Inequalities for Robust Combinatorial Optimization with Budget Uncertainty" presented by the same authors at IPCO 2023.
 
 ## Dependencies
 The algorithms use Gurobi as a MILP solver. Make sure to first install Gurobi on your machine. Also specify the path to the gurobi.jar when running the code.
@@ -20,9 +20,9 @@ The second file specifies the uncertainty in the problem, that is the robustness
 An Example for a robust knapsack problem can be found in the `testInstances/` folder.
 
 ## Running Algorithms
-To solve a problem, run the `AlgorithmExecuter` class. You can specify the problem to solve, the algorithm to use, and optional strategies either by responding in the console or by directly giving the arguments.
+To solve a problem, run the `AlgorithmExecuter` class. You can specify the problem to solve, the algorithm to use, and optional strategies in two ways. First, you may add arguments to the execution of the `AlgorithmExecuter` class (see example below). Second, you may add no arguments and simply respond to the pop-up windows after starting the program.
 
-In the latter case, the first argument is the path to the nominal problem file. The second argument is the path to the robustness components. The third argument is the algorithm to use. Here you can choose from `bnb`, `rec`, `dnc`, `ref`, `cut`, `bss`, `rp1`, `rp2`, `rp3`, `rp4`, where bnb is the branch and bound algorithm from "A Branch and Bound Algorithm for Robust Binary Optimization with Budget Uncertainty" and rec uses recycled inequalities from "Recycling Inequalities for Robust Combinatorial Optimization with Budget Uncertainty".
+In the former case, the first argument is the path to the nominal problem file. The second argument is the path to the robustness components. The third argument is the algorithm to use. Here you can choose from `bnb`, `rec`, `dnc`, `ref`, `cut`, `bss`, `rp1`, `rp2`, `rp3`, `rp4`, `sub`, where bnb is the branch and bound algorithm from "A Branch and Bound Algorithm for Robust Binary Optimization with Budget Uncertainty" and rec uses recycled inequalities from "Recycling Inequalities for Robust Combinatorial Optimization with Budget Uncertainty".
 
 You can optionally specify a time limit in seconds, a destination for a log file, a destination for a results file (with objective values/gaps/computation time...), and a destination for a solution file. For this, optionally append further arguments of the form `timelimit=*`, `logpath=*`, `resultspath=*`, and `solutionpath=*` in any order.
 
